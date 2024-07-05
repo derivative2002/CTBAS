@@ -210,22 +210,25 @@ class TradingStrategy:
             self.update_analysis_window("无法获取当前价格，无法计算交易量")
             return None
 
+        # 获取最小交易量
         symbol_info = self.get_symbol_info("BTC-USDT-SWAP")
         if symbol_info is None:
             self.update_analysis_window("无法获取完整的交易品种信息，使用默认值")
             return None
 
-        contract_value = symbol_info['contract_val'] * current_price
-        risk_per_contract = stop_loss_distance * contract_value
+        min_lot_size = symbol_info['min_size']  # 交易所允许的最小交易量
+        tick_size = symbol_info['tick_size']  # 价格的最小变动单位
 
-        lot_size = risk_amount / risk_per_contract
-        min_lot_size = symbol_info['min_size']
-        contract_size = symbol_info['contract_size']
+        # 计算每币风险
+        risk_per_unit = stop_loss_distance * current_price
 
-        # 确保lot_size是contract_size的整数倍，并且不小于最小下单量
-        lot_size = max(round(lot_size / contract_size) * contract_size, min_lot_size)
+        # 计算交易量（单位：币）
+        lot_size = risk_amount / risk_per_unit
 
-        self.update_analysis_window(f"计算的交易量: {lot_size:.1f} 张")
+        # 确保交易量不低于最小交易量并且是tick_size的整数倍
+        lot_size = max(round(lot_size / tick_size) * tick_size, min_lot_size)
+
+        self.update_analysis_window(f"计算的交易量: {lot_size:.4f} BTC")
 
         return lot_size
 
@@ -248,7 +251,7 @@ class TradingStrategy:
 
     def open_position(self, order_type):
         lot_size = self.calculate_lot_size(self.account_balance, self.atr)
-        if lot_size is None or lot_size < 0.1:  # 更新为0.1
+        if lot_size is None or lot_size < 0.001:  # 确保交易量不低于0.001 BTC
             self.update_analysis_window("计算的交易量过小，无法开仓")
             return None
 
@@ -263,7 +266,7 @@ class TradingStrategy:
         order_result = self.place_order(side, pos_side, current_price, lot_size)
         self.update_analysis_window(f"下单结果: {order_result}")
 
-        # ... 其余的代码保持不变 ...
+        # 处理下单结果
         if order_result and isinstance(order_result, list) and len(order_result) > 0:
             order_info = order_result[0]
             order_id = order_info.get('ordId')
@@ -285,7 +288,7 @@ class TradingStrategy:
                         self.take_profit_price = self.open_price - TAKE_PROFIT * self.atr
 
                     self.update_analysis_window(
-                        f"下单成功: {order_type.capitalize()}单已成交: 数量={lot_size:.3f} BTC, 开仓价={self.open_price:.2f}, "
+                        f"下单成功: {order_type.capitalize()}单已成交: 数量={lot_size:.4f} BTC, 开仓价={self.open_price:.2f}, "
                         f"初始止损价={self.stop_loss_price:.2f}, 初始止盈价={self.take_profit_price:.2f}")
                     self.update_balance()
                     return {'ordId': order_id}
