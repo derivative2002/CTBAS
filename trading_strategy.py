@@ -254,6 +254,7 @@ class TradingStrategy:
 
         return None
 
+
     def open_position(self, order_type):
         lot_size = self.calculate_lot_size(self.account_balance, self.atr)
         if lot_size is None or lot_size < 0.001:
