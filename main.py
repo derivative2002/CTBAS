@@ -1,11 +1,10 @@
 import threading
-import datetime
-from queue import Queue
 import tkinter as tk
+from queue import Queue
 from strategy_analysis_window import StrategyAnalysisWindow
 from trading_strategy import TradingStrategy
 from data_collector import DataCollector
-
+import asyncio
 
 def main():
     root = tk.Tk()
@@ -24,7 +23,7 @@ def main():
     data_collector = DataCollector(data_queue)
 
     # 启动数据收集器（在新线程中）
-    collector_thread = threading.Thread(target=data_collector.start)
+    collector_thread = threading.Thread(target=lambda: asyncio.run(data_collector.start()))
     collector_thread.start()
 
     # 启动交易策略（在新线程中）
@@ -37,7 +36,6 @@ def main():
     # 等待其他线程结束
     collector_thread.join()
     strategy_thread.join()
-
 
 if __name__ == "__main__":
     main()

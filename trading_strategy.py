@@ -234,7 +234,6 @@ class TradingStrategy:
             'instId': symbol
         }
         response = self.get_data_with_retry(endpoint, params=params)
-
         if response and 'data' in response:
             if len(response['data']) > 0:
                 instrument_info = response['data'][0]
@@ -242,7 +241,7 @@ class TradingStrategy:
                     'tick_size': float(instrument_info.get('tickSz', '0.1')),
                     'min_size': float(instrument_info.get('minSz', '0.1')),
                     'lot_size': float(instrument_info.get('lotSz', '0.1')),
-                    'contract_val': float(instrument_info.get('ctVal', '0.01')),
+                    'contract_val': float(instrument_info.get('ctVal', '0.001')),
                     'contract_multiplier': float(instrument_info.get('ctMult', '1')),
                     'max_leverage': float(instrument_info.get('lever', '100')),
                     'contract_size': float(instrument_info.get('ctVal', '100')),
