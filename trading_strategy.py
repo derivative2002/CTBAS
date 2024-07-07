@@ -79,10 +79,29 @@ class TradingStrategy:
             return float(response['data'][0]['details'][0]['cashBal'])
         return None
 
+    def get_open_positions_value(self):
+        floating_profit = 0
+
+        for position in self.open_positions:
+            current_price = self.get_current_price()
+            if current_price is None:
+                continue
+
+            if position['type'] == "buy":
+                profit = (current_price - position['open_price']) * position['size']
+            else:  # sell
+                profit = (position['open_price'] - current_price) * position['size']
+
+            floating_profit += profit
+
+        return 0, floating_profit
+
     def update_balance(self):
         self.account_balance = self.get_account_balance()
-        self.update_analysis_window(f"账户余额已更新: {self.account_balance} USDT")
-        self.analysis_window.update_balance(self.account_balance)
+        positions_value, floating_profit = self.get_open_positions_value()
+        total_value = self.account_balance + floating_profit
+
+        self.analysis_window.update_balance(self.account_balance, floating_profit, total_value)
 
     def get_position_summary(self, position):
         if position is None:
@@ -205,27 +224,32 @@ class TradingStrategy:
             self.update_analysis_window("无法获取当前价格，无法计算交易量")
             return None
 
-        # 获取最小交易量
         symbol_info = self.get_symbol_info("BTC-USDT-SWAP")
         if symbol_info is None:
             self.update_analysis_window("无法获取完整的交易品种信息，使用默认值")
             return None
 
-        min_lot_size = symbol_info['min_size']  # 交易所允许的最小交易量
-        tick_size = symbol_info['tick_size']  # 价格的最小变动单位
+        min_lot_size = symbol_info['min_size']
+        max_lot_size = symbol_info['max_size']
+        step_lot_size = symbol_info['step_size']
+        tick_size = symbol_info['tick_size']
+        tick_value = symbol_info['tick_value']
+        contract_val = symbol_info['contract_val']  # 合约面值
 
-        # 计算每币风险
-        risk_per_unit = stop_loss_distance * current_price
-
-        # 计算交易量（单位：币）
+        risk_per_unit = stop_loss_distance / tick_size * tick_value
         lot_size = risk_amount / risk_per_unit
 
         # 确保交易量不低于最小交易量并且是tick_size的整数倍
-        lot_size = max(round(lot_size / tick_size) * tick_size, min_lot_size)
+        lot_size = max(min(lot_size, max_lot_size), min_lot_size)
+        lot_size = round(lot_size / step_lot_size) * step_lot_size
 
-        self.update_analysis_window(f"计算的交易量: {lot_size:.4f} BTC")
+        # 计算张数
+        num_contracts = lot_size / contract_val
 
-        return lot_size
+        self.update_analysis_window(
+            f"计算的交易量: {lot_size:.4f} 手 (相当于 {num_contracts:.4f} 张， {lot_size:.4f} BTC)")
+
+        return lot_size, num_contracts
 
     def get_symbol_info(self, symbol):
         endpoint = f"/api/v5/public/instruments"
@@ -240,7 +264,9 @@ class TradingStrategy:
                 return {
                     'tick_size': float(instrument_info.get('tickSz', '0.1')),
                     'min_size': float(instrument_info.get('minSz', '0.1')),
-                    'lot_size': float(instrument_info.get('lotSz', '0.1')),
+                    'max_size': float(instrument_info.get('maxSz', '100.0')),  # 添加默认值
+                    'step_size': float(instrument_info.get('lotSz', '0.1')),  # 添加默认值
+                    'tick_value': float(instrument_info.get('tickVal', '1')),  # 添加默认值
                     'contract_val': float(instrument_info.get('ctVal', '0.001')),
                     'contract_multiplier': float(instrument_info.get('ctMult', '1')),
                     'max_leverage': float(instrument_info.get('lever', '100')),
@@ -253,9 +279,8 @@ class TradingStrategy:
 
         return None
 
-
     def open_position(self, order_type):
-        lot_size = self.calculate_lot_size(self.account_balance, self.atr)
+        lot_size, num_contracts = self.calculate_lot_size(self.account_balance, self.atr)
         if lot_size is None or lot_size < 0.001:
             self.update_analysis_window("计算的交易量过小，无法开仓")
             return None
@@ -268,7 +293,7 @@ class TradingStrategy:
             self.update_analysis_window("无法获取当前价格，开仓失败")
             return None
 
-        order_result = self.place_order(side, pos_side, current_price, lot_size)
+        order_result = self.place_order(side, pos_side, current_price, num_contracts)
         self.update_analysis_window(f"下单结果: {order_result}")
 
         if order_result and isinstance(order_result, list) and len(order_result) > 0:
@@ -296,7 +321,7 @@ class TradingStrategy:
                     self.open_positions.append(position)
 
                     self.update_analysis_window(
-                        f"下单成功: {order_type.capitalize()}单已成交: 数量={lot_size:.4f} BTC, 开仓价={position['open_price']:.2f}, "
+                        f"下单成功: {order_type.capitalize()}单已成交: 数量={num_contracts:.4f} 张 (相当于 {lot_size:.4f} BTC), 开仓价={position['open_price']:.2f}, "
                         f"初始止损价={position['stop_loss_price']:.2f}, 初始止盈价={position['take_profit_price']:.2f}")
                     self.update_balance()
                     return {'ordId': order_id}

@@ -5,7 +5,6 @@ from tkinter import scrolledtext
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-
 class StrategyAnalysisWindow:
     def __init__(self):
         self.root = None
@@ -13,6 +12,8 @@ class StrategyAnalysisWindow:
         self.message_queue = Queue()
         self.counter = 1
         self.balance_var = tk.StringVar()
+        self.position_var = tk.StringVar()
+        self.total_value_var = tk.StringVar()
         self.figure = None
         self.ax = None
         self.canvas = None
@@ -32,9 +33,15 @@ class StrategyAnalysisWindow:
         resume_button = tk.Button(self.root, text="恢复", command=strategy.resume)
         resume_button.pack(side=tk.LEFT, padx=5, pady=5)
 
-        # 添加显示账户余额的标签
+        # 添加显示账户余额和仓位信息的标签
         balance_label = tk.Label(self.root, textvariable=self.balance_var, font=("Helvetica", 16))
         balance_label.pack(pady=10)
+
+        position_label = tk.Label(self.root, textvariable=self.position_var, font=("Helvetica", 16))
+        position_label.pack(pady=10)
+
+        total_value_label = tk.Label(self.root, textvariable=self.total_value_var, font=("Helvetica", 16))
+        total_value_label.pack(pady=10)
 
         # 创建图表
         self.figure = Figure(figsize=(10, 4), dpi=100)
@@ -58,8 +65,10 @@ class StrategyAnalysisWindow:
             self.text_area.see(tk.END)
         self.root.after(100, self.update_text)
 
-    def update_balance(self, balance):
+    def update_balance(self, balance, floating_profit, total_value):
         self.balance_var.set(f"当前账户余额: {balance:.2f} USDT")
+        self.position_var.set(f"浮动收益: {floating_profit:.2f} USDT")
+        self.total_value_var.set(f"总价值: {total_value:.2f} USDT")
 
     def update_chart(self, data):
         self.ax.clear()
