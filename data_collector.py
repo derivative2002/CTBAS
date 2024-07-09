@@ -9,6 +9,7 @@ class DataCollector:
     def __init__(self, queue):
         self.queue = queue
         self.message_count = 0
+        self.reconnect_delay = 5  # 重连延迟时间(秒)
 
     async def on_message(self, message):
         data = json.loads(message)
@@ -24,11 +25,21 @@ class DataCollector:
 
     async def start(self):
         uri = "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999"
-        async with websockets.connect(uri) as websocket:
-            subscribe_message = {
-                "op": "subscribe",
-                "args": [{"channel": "tickers", "instId": "BTC-USDT-SWAP"}]
-            }
-            await websocket.send(json.dumps(subscribe_message))
-            async for message in websocket:
-                await self.on_message(message)
+        while True:
+            try:
+                async with websockets.connect(uri) as websocket:
+                    subscribe_message = {
+                        "op": "subscribe",
+                        "args": [{"channel": "tickers", "instId": "BTC-USDT-SWAP"}]
+                    }
+                    await websocket.send(json.dumps(subscribe_message))
+                    async for message in websocket:
+                        await self.on_message(message)
+            except websockets.exceptions.ConnectionClosedError as e:
+                logging.error(f"WebSocket连接已关闭: {e}")
+                logging.info(f"将在{self.reconnect_delay}秒后重新连接...")
+                await asyncio.sleep(self.reconnect_delay)
+            except Exception as e:
+                logging.error(f"发生错误: {e}")
+                logging.info(f"将在{self.reconnect_delay}秒后重新连接...")
+                await asyncio.sleep(self.reconnect_delay)

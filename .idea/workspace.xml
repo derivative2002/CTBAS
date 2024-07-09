@@ -4,7 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2460e50a-2a04-4d6b-a7e1-7dab60981424" name="更改" comment="将数据收集器和交易策略分离成独立的线程，并使用 asyncio 来处理 WebSocket 数据收集。" />
+    <list default="true" id="2460e50a-2a04-4d6b-a7e1-7dab60981424" name="更改" comment="将数据收集器和交易策略分离成独立的线程，并使用 asyncio 来处理 WebSocket 数据收集。">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/data_collector.py" beforeDir="false" afterPath="$PROJECT_DIR$/data_collector.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/trading_strategy.py" beforeDir="false" afterPath="$PROJECT_DIR$/trading_strategy.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -41,7 +45,9 @@
   &quot;associatedIndex&quot;: 6
 }</component>
   <component name="ProjectId" id="2ijlvPtESrzHgM2cqMF0UPMsptN" />
-  <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
+  <component name="ProjectLevelVcsManager" settingsEditedManually="true">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
@@ -55,7 +61,7 @@
     "RunOnceActivity.OpenProjectViewOnStart": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "WebServerToolWindowFactoryState": "false",
-    "git-widget-placeholder": "V1.2",
+    "git-widget-placeholder": "V1.4",
     "ignore.virus.scanning.warn.message": "true",
     "last_opened_file_path": "C:/okx/CTBAS_Bai",
     "node.js.detected.package.eslint": "true",
@@ -186,6 +192,9 @@
     <SUITE FILE_PATH="coverage/CTBAS_V1_0$trading_strategy.coverage" NAME="trading_strategy 覆盖结果" MODIFIED="1720262473855" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/CTBAS_V1_0$main.coverage" NAME="main 覆盖结果" MODIFIED="1720284211802" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/CTBAS_V1_0$config.coverage" NAME="config 覆盖结果" MODIFIED="1720261798570" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/CTBAS_V1$config.coverage" NAME="config 覆盖结果" MODIFIED="1720597384458" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/CTBAS_V1_0$strategy_analysis_window.coverage" NAME="strategy_analysis_window 覆盖结果" MODIFIED="1720261801061" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/CTBAS_V1$trading_strategy.coverage" NAME="trading_strategy 覆盖结果" MODIFIED="1720615603776" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/CTBAS_V1$main.coverage" NAME="main 覆盖结果" MODIFIED="1720615606271" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>

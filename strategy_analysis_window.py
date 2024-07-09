@@ -1,5 +1,4 @@
 import datetime
-from queue import Queue
 import tkinter as tk
 from tkinter import scrolledtext
 from matplotlib.figure import Figure
@@ -9,61 +8,54 @@ class StrategyAnalysisWindow:
     def __init__(self):
         self.root = None
         self.text_area = None
-        self.message_queue = Queue()
-        self.counter = 1
         self.balance_var = tk.StringVar()
         self.position_var = tk.StringVar()
         self.total_value_var = tk.StringVar()
         self.figure = None
         self.ax = None
         self.canvas = None
+        self.strategy = None
 
     def setup(self, strategy):
-        self.root = tk.Toplevel()
-        self.root.title("策略分析")
-        self.root.geometry("1000x800")
+        if self.root is None:
+            self.root = tk.Toplevel()
+            self.root.title("策略分析")
+            self.root.geometry("1000x800")
 
-        self.text_area = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, width=80, height=20)
-        self.text_area.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+            self.text_area = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, width=80, height=20)
+            self.text_area.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 
-        # 添加暂停和恢复按钮
-        pause_button = tk.Button(self.root, text="暂停", command=strategy.pause)
-        pause_button.pack(side=tk.LEFT, padx=5, pady=5)
+            pause_button = tk.Button(self.root, text="暂停", command=strategy.pause)
+            pause_button.pack(side=tk.LEFT, padx=5, pady=5)
 
-        resume_button = tk.Button(self.root, text="恢复", command=strategy.resume)
-        resume_button.pack(side=tk.LEFT, padx=5, pady=5)
+            resume_button = tk.Button(self.root, text="恢复", command=strategy.resume)
+            resume_button.pack(side=tk.LEFT, padx=5, pady=5)
 
-        # 添加显示账户余额和仓位信息的标签
-        balance_label = tk.Label(self.root, textvariable=self.balance_var, font=("Helvetica", 16))
-        balance_label.pack(pady=10)
+            balance_label = tk.Label(self.root, textvariable=self.balance_var, font=("Helvetica", 16))
+            balance_label.pack(pady=10)
 
-        position_label = tk.Label(self.root, textvariable=self.position_var, font=("Helvetica", 16))
-        position_label.pack(pady=10)
+            position_label = tk.Label(self.root, textvariable=self.position_var, font=("Helvetica", 16))
+            position_label.pack(pady=10)
 
-        total_value_label = tk.Label(self.root, textvariable=self.total_value_var, font=("Helvetica", 16))
-        total_value_label.pack(pady=10)
+            total_value_label = tk.Label(self.root, textvariable=self.total_value_var, font=("Helvetica", 16))
+            total_value_label.pack(pady=10)
 
-        # 创建图表
-        self.figure = Figure(figsize=(10, 4), dpi=100)
-        self.ax = self.figure.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.figure, master=self.root)
-        self.canvas.draw()
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
-        self.update_text()
+            self.figure = Figure(figsize=(10, 4), dpi=100)
+            self.ax = self.figure.add_subplot(111)
+            self.canvas = FigureCanvasTkAgg(self.figure, master=self.root)
+            self.canvas.draw()
+            self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def add_message(self, message):
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        formatted_message = f"{self.counter}. [{timestamp}] {message}\n"
-        self.message_queue.put(formatted_message)
-        self.counter += 1
+        if self.text_area is None:
+            if self.strategy is not None:
+                self.setup(self.strategy)  # 如果 self.text_area 还没有初始化,并且已经有 strategy 对象,调用 setup 方法
+            else:
+                return  # 如果 strategy 对象还没有设置,直接返回,不添加消息
 
-    def update_text(self):
-        while not self.message_queue.empty():
-            message = self.message_queue.get()
-            self.text_area.insert(tk.END, message)
-            self.text_area.see(tk.END)
-        self.root.after(100, self.update_text)
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        formatted_message = f"[{timestamp}] {message}\n"
+        self.text_area.insert(tk.END, formatted_message)
 
     def update_balance(self, balance, floating_profit, total_value):
         self.balance_var.set(f"当前账户余额: {balance:.2f} USDT")
@@ -80,5 +72,6 @@ class StrategyAnalysisWindow:
         self.canvas.draw()
 
     def run(self, strategy):
+        self.strategy = strategy
         self.setup(strategy)
         self.root.mainloop()
