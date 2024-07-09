@@ -1,0 +1,12 @@
+{
+    "TAKE_PROFIT": 3.0,
+    "MA_PERIODS": [10, 20, 30, 60, 144, 250],
+    "ATR_PERIOD": 14,
+    "ATR_MULTIPLIER": 2.0,
+    "RISK_PERCENT": 5.0,
+    "TREND_MA_PERIOD": 200,
+    "api_key": "a5653cf6-0466-4ca7-a157-89b79b773d79",
+    "secret_key": "7E9BD83705599BA3F2A447FC8817377F",
+    "passphrase": "@BTL0202lwm0316",
+    "base_url": "https://www.okx.com"
+}

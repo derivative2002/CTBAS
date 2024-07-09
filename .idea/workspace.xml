@@ -4,11 +4,23 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="2460e50a-2a04-4d6b-a7e1-7dab60981424" name="更改" comment="将数据收集器和交易策略分离成独立的线程，并使用 asyncio 来处理 WebSocket 数据收集。" />
+    <list default="true" id="2460e50a-2a04-4d6b-a7e1-7dab60981424" name="更改" comment="将数据收集器和交易策略分离成独立的线程，并使用 asyncio 来处理 WebSocket 数据收集。">
+      <change afterPath="$PROJECT_DIR$/api_client.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/indicator_calculator.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/order_manager.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/trading_strategy.py" beforeDir="false" afterPath="$PROJECT_DIR$/trading_strategy.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Python Script" />
+      </list>
+    </option>
   </component>
   <component name="Git.Settings">
     <branch-grouping />
@@ -41,7 +53,9 @@
   &quot;associatedIndex&quot;: 6
 }</component>
   <component name="ProjectId" id="2ijlvPtESrzHgM2cqMF0UPMsptN" />
-  <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
+  <component name="ProjectLevelVcsManager" settingsEditedManually="true">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
@@ -55,7 +69,7 @@
     "RunOnceActivity.OpenProjectViewOnStart": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "WebServerToolWindowFactoryState": "false",
-    "git-widget-placeholder": "V1.2",
+    "git-widget-placeholder": "V1.4",
     "ignore.virus.scanning.warn.message": "true",
     "last_opened_file_path": "C:/okx/CTBAS_Bai",
     "node.js.detected.package.eslint": "true",
@@ -94,6 +108,7 @@
       <workItem from="1720112946635" duration="8797000" />
       <workItem from="1720255439811" duration="152000" />
       <workItem from="1720255597781" duration="11757000" />
+      <workItem from="1720547956883" duration="338000" />
     </task>
     <task id="LOCAL-00001" summary="update">
       <option name="closed" value="true" />
