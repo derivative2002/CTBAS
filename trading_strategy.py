@@ -14,6 +14,7 @@ from config import api_key, secret_key, passphrase, base_url, TAKE_PROFIT, MA_PE
     RISK_PERCENT, TREND_MA_PERIOD
 from queue import Empty
 
+
 class TradingStrategy:
     def __init__(self, data_queue, analysis_window):
         self.api_key = api_key
@@ -26,6 +27,14 @@ class TradingStrategy:
         self.initialize_strategy()
         self.paused = False
 
+        # 设置日志
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+
     def initialize_strategy(self):
         self.open_positions = []
         self.strategy_status = "空闲"
@@ -35,7 +44,9 @@ class TradingStrategy:
         self.trend_ma = 0
         self.atr = 0
 
-    def update_analysis_window(self, message):
+    def log_and_update(self, message, level=logging.INFO):
+        """统一的日志记录和UI更新方法"""
+        self.logger.log(level, message)
         self.analysis_window.add_message(message)
 
     def sign_message(self, timestamp, method, request_path, body=''):
@@ -66,10 +77,11 @@ class TradingStrategy:
                 response.raise_for_status()
                 return response.json()
             except RequestException as e:
-                logging.error(f"请求失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                self.log_and_update(f"请求失败 (尝试 {attempt + 1}/{max_retries}): {e}", logging.ERROR)
+                self.log_and_update(f"请求详情: URL={url}, 方法={method}, 参数={params}, 数据={data}", logging.DEBUG)
                 if attempt < max_retries - 1:
                     time.sleep(delay)
-        logging.error("所有重试都失败了")
+        self.log_and_update("所有重试都失败了", logging.ERROR)
         return None
 
     def get_account_balance(self):
@@ -140,16 +152,16 @@ class TradingStrategy:
         if response and 'data' in response:
             data = response['data']
             if len(data) > 0:
-                logging.info(f"成功获取 {len(data)} 条K线数据")
+                self.log_and_update(f"成功获取 {len(data)} 条K线数据")
                 return data
             else:
-                logging.error("获取的K线数据为空")
-        logging.error("获取K线数据失败")
+                self.log_and_update("获取的K线数据为空", logging.ERROR)
+        self.log_and_update("获取K线数据失败", logging.ERROR)
         return []
 
     def update_indicators(self, kline_data):
         if len(kline_data) < max(max(MA_PERIODS), TREND_MA_PERIOD, ATR_PERIOD + 1):
-            logging.warning(f"K线数据不足，当前数据量: {len(kline_data)}")
+            self.log_and_update(f"K线数据不足，当前数据量: {len(kline_data)}", logging.WARNING)
             return
 
         close_prices = np.array([float(k[4]) for k in kline_data])[::-1]
@@ -168,13 +180,13 @@ class TradingStrategy:
         self.atr = self.calculate_atr(high_prices, low_prices, close_prices, ATR_PERIOD)
 
         if np.isnan(self.atr) or self.atr == 0:
-            logging.warning("ATR 计算结果无效")
+            self.log_and_update("ATR 计算结果无效", logging.WARNING)
             self.atr = None
 
-        logging.info("指标更新完成")
-        logging.info(f"MA values: {self.ma_values}")
-        logging.info(f"Trend MA: {self.trend_ma}")
-        logging.info(f"ATR: {self.atr}")
+        self.log_and_update("指标更新完成")
+        self.log_and_update(f"MA values: {self.ma_values}")
+        self.log_and_update(f"Trend MA: {self.trend_ma}")
+        self.log_and_update(f"ATR: {self.atr}")
 
     def calculate_atr(self, high_prices, low_prices, close_prices, period):
         tr = np.zeros(len(high_prices))
@@ -199,6 +211,10 @@ class TradingStrategy:
             if np.isnan(ma_value) or current_price <= ma_value:
                 return False, ["价格未突破所有MA"]
 
+        # 检查上一根K线的收盘价是否低于30日移动平均线(MA_PERIOD3)
+        if self.prev_ma_values[2] is not None and self.get_previous_close_price() > self.prev_ma_values[2]:
+            return False, ["上一根K线的收盘价未低于30日移动平均线"]
+
         return True, ["所有做多条件满足"]
 
     def check_sell_condition(self, current_price):
@@ -209,11 +225,22 @@ class TradingStrategy:
             if np.isnan(ma_value) or current_price >= ma_value:
                 return False, ["价格未跌破所有MA"]
 
+        # 检查上一根K线的收盘价是否高于30日移动平均线(MA_PERIOD3)
+        if self.prev_ma_values[2] is not None and self.get_previous_close_price() < self.prev_ma_values[2]:
+            return False, ["上一根K线的收盘价未高于30日移动平均线"]
+
         return True, ["所有做空条件满足"]
+
+    def get_previous_close_price(self):
+        endpoint = "/api/v5/market/ticker?instId=BTC-USDT-SWAP"
+        response = self.get_data_with_retry(endpoint)
+        if response and 'data' in response:
+            return float(response['data'][0]['last'])
+        return None
 
     def calculate_lot_size(self, account_balance, atr):
         if atr is None or atr == 0:
-            self.update_analysis_window("ATR 为 0，无法计算交易量")
+            self.log_and_update("ATR 为 0，无法计算交易量", logging.WARNING)
             return None
 
         risk_amount = account_balance * RISK_PERCENT / 100.0
@@ -221,35 +248,23 @@ class TradingStrategy:
 
         current_price = self.get_current_price()
         if current_price is None:
-            self.update_analysis_window("无法获取当前价格，无法计算交易量")
+            self.log_and_update("无法获取当前价格，无法计算交易量", logging.WARNING)
             return None
 
         symbol_info = self.get_symbol_info("BTC-USDT-SWAP")
         if symbol_info is None:
-            self.update_analysis_window("无法获取完整的交易品种信息，使用默认值")
+            self.log_and_update("无法获取完整的交易品种信息，使用默认值", logging.WARNING)
             return None
 
-        min_lot_size = symbol_info['min_size']
-        max_lot_size = symbol_info['max_size']
-        step_lot_size = symbol_info['step_size']
         tick_size = symbol_info['tick_size']
         tick_value = symbol_info['tick_value']
-        contract_val = symbol_info['contract_val']  # 合约面值
 
-        risk_per_unit = stop_loss_distance / tick_size * tick_value
-        lot_size = risk_amount / risk_per_unit
+        risk_per_lot = stop_loss_distance / tick_size * tick_value
+        lot_size = risk_amount / risk_per_lot
 
-        # 确保交易量不低于最小交易量并且是tick_size的整数倍
-        lot_size = max(min(lot_size, max_lot_size), min_lot_size)
-        lot_size = round(lot_size / step_lot_size) * step_lot_size
+        self.log_and_update(f"计算的交易量: {lot_size:.4f} 手")
 
-        # 计算张数
-        num_contracts = lot_size / contract_val
-
-        self.update_analysis_window(
-            f"计算的交易量: {lot_size:.4f} 手 (相当于 {num_contracts:.4f} 张， {lot_size:.4f} BTC)")
-
-        return lot_size, num_contracts
+        return lot_size
 
     def get_symbol_info(self, symbol):
         endpoint = f"/api/v5/public/instruments"
@@ -264,76 +279,98 @@ class TradingStrategy:
                 return {
                     'tick_size': float(instrument_info.get('tickSz', '0.1')),
                     'min_size': float(instrument_info.get('minSz', '0.1')),
-                    'max_size': float(instrument_info.get('maxSz', '100.0')),  # 添加默认值
-                    'step_size': float(instrument_info.get('lotSz', '0.1')),  # 添加默认值
-                    'tick_value': float(instrument_info.get('tickVal', '1')),  # 添加默认值
+                    'max_size': float(instrument_info.get('maxSz', '100.0')),
+                    'step_size': float(instrument_info.get('lotSz', '0.1')),
+                    'tick_value': float(instrument_info.get('tickVal', '1')),
                     'contract_val': float(instrument_info.get('ctVal', '0.001')),
                     'contract_multiplier': float(instrument_info.get('ctMult', '1')),
                     'max_leverage': float(instrument_info.get('lever', '100')),
                     'contract_size': float(instrument_info.get('ctVal', '100')),
                 }
             else:
-                self.update_analysis_window("获取的交易品种数据为空")
+                self.log_and_update("获取的交易品种数据为空", logging.WARNING)
         else:
-            self.update_analysis_window(f"无法获取交易品种信息，错误信息: {response.get('msg', '未知错误')}")
-
+            self.log_and_update(f"无法获取交易品种信息，错误信息: {response.get('msg', '未知错误')}", logging.ERROR)
         return None
 
     def open_position(self, order_type):
-        lot_size, num_contracts = self.calculate_lot_size(self.account_balance, self.atr)
-        if lot_size is None or lot_size < 0.001:
-            self.update_analysis_window("计算的交易量过小，无法开仓")
+        if self.account_balance is None:
+            self.update_balance()
+        if self.account_balance is None or self.account_balance <= 0:
+            self.log_and_update("账户余额不足，无法开仓", logging.WARNING)
+            return None
+
+        lot_size = self.calculate_lot_size(self.account_balance, self.atr)
+        if lot_size is None:
             return None
 
         side = "buy" if order_type == "buy" else "sell"
         pos_side = "long" if order_type == "buy" else "short"
-
         current_price = self.get_current_price()
         if current_price is None:
-            self.update_analysis_window("无法获取当前价格，开仓失败")
+            self.log_and_update("无法获取当前价格，开仓失败", logging.WARNING)
             return None
 
-        order_result = self.place_order(side, pos_side, current_price, num_contracts)
-        self.update_analysis_window(f"下单结果: {order_result}")
+        stop_loss_price = current_price - ATR_MULTIPLIER * self.atr if order_type == "buy" else current_price + ATR_MULTIPLIER * self.atr
+
+        symbol_info = self.get_symbol_info("BTC-USDT-SWAP")
+        if symbol_info is None:
+            self.log_and_update("无法获取交易品种信息，开仓失败", logging.ERROR)
+            return None
+
+        contract_size = symbol_info['contract_val']
+        num_contracts = lot_size / contract_size
+
+        min_size = symbol_info['min_size']
+        adjusted_num_contracts = max(round(num_contracts / min_size) * min_size, min_size)
+
+        if adjusted_num_contracts < min_size:
+            self.log_and_update(f"计算的交易量 ({adjusted_num_contracts:.4f} 张) 过小，无法开仓", logging.WARNING)
+            return None
+
+        order_result = self.place_order(side, pos_side, adjusted_num_contracts, stop_loss_price)
+        self.log_and_update(f"下单结果: {order_result}")
 
         if order_result and isinstance(order_result, list) and len(order_result) > 0:
             order_info = order_result[0]
-            order_id = order_info.get('ordId')
-            if order_id:
-                order_status = self.check_order_status(order_id)
+            if order_info.get('sCode') == '0':
+                order_id = order_info.get('ordId')
+                if order_id:
+                    order_status = self.check_order_status(order_id)
 
-                if order_status == 'filled':
-                    position = {
-                        'type': order_type,
-                        'open_price': float(order_info.get('avgPx', current_price)),
-                        'size': lot_size,
-                        'open_time': time.time(),
-                        'stop_loss_price': 0,
-                        'take_profit_price': 0,
-                    }
-                    if order_type == "buy":
-                        position['stop_loss_price'] = position['open_price'] - ATR_MULTIPLIER * self.atr
-                        position['take_profit_price'] = position['open_price'] + TAKE_PROFIT * self.atr
+                    if order_status == 'filled':
+                        position = {
+                            'type': order_type,
+                            'open_price': float(order_info.get('avgPx', current_price)),
+                            'size': lot_size,
+                            'open_time': time.time(),
+                            'stop_loss_price': stop_loss_price,
+                            'take_profit_price': 0,
+                        }
+
+                        position['take_profit_price'] = position[
+                                                            'open_price'] + TAKE_PROFIT * self.atr if order_type == "buy" else \
+                            position['open_price'] - TAKE_PROFIT * self.atr
+
+                        self.open_positions.append(position)
+
+                        self.log_and_update(
+                            f"开仓成功: {order_type.capitalize()}单已成交, 手数={lot_size:.4f} (合约张数: {adjusted_num_contracts:.4f}), 开仓价={position['open_price']:.2f},"
+                            f"初始止损价={position['stop_loss_price']:.2f}, 初始止盈价={position['take_profit_price']:.2f}")
+
+                        self.update_balance()
+                        return {'ordId': order_id}
+                    elif order_status == 'pending':
+                        self.log_and_update(f"下单已提交，但尚未完全成交。订单ID: {order_id}")
+                        return {'ordId': order_id}
                     else:
-                        position['stop_loss_price'] = position['open_price'] + ATR_MULTIPLIER * self.atr
-                        position['take_profit_price'] = position['open_price'] - TAKE_PROFIT * self.atr
-
-                    self.open_positions.append(position)
-
-                    self.update_analysis_window(
-                        f"下单成功: {order_type.capitalize()}单已成交: 数量={num_contracts:.4f} 张 (相当于 {lot_size:.4f} BTC), 开仓价={position['open_price']:.2f}, "
-                        f"初始止损价={position['stop_loss_price']:.2f}, 初始止盈价={position['take_profit_price']:.2f}")
-                    self.update_balance()
-                    return {'ordId': order_id}
-                elif order_status == 'pending':
-                    self.update_analysis_window(f"下单已提交，但尚未完全成交。订单ID: {order_id}")
-                    return {'ordId': order_id}
+                        self.log_and_update(f"下单状态未知。订单ID: {order_id}, 状态: {order_status}", logging.WARNING)
                 else:
-                    self.update_analysis_window(f"下单状态未知。订单ID: {order_id}, 状态: {order_status}")
+                    self.log_and_update(f"下单成功，但未能获取订单ID。订单信息: {order_info}", logging.WARNING)
             else:
-                self.update_analysis_window(f"下单成功，但未能获取订单ID。订单信息: {order_info}")
+                self.log_and_update(f"下单失败: {order_info.get('sMsg')}", logging.WARNING)
         else:
-            self.update_analysis_window(f"{order_type.capitalize()}单下单失败。返回结果: {order_result}")
+            self.log_and_update(f"{order_type.capitalize()}单下单失败。返回结果: {order_result}", logging.WARNING)
 
         return None
 
@@ -354,20 +391,24 @@ class TradingStrategy:
             time.sleep(1)
         return 'unknown'
 
-    def place_order(self, side, pos_side, price, size=None):
+    def place_order(self, side, pos_side, size, stop_loss_price=None):
         endpoint = "/api/v5/trade/order"
         order_data = {
             "instId": "BTC-USDT-SWAP",
             "tdMode": "cross",
             "side": side,
             "ordType": "market",
-            "px": str(price),
-            "sz": f"{size:.1f}",
+            "sz": f"{size:.4f}",
             "posSide": pos_side,
         }
 
+        if stop_loss_price is not None:
+            order_data["slTriggerPx"] = str(stop_loss_price)
+            order_data["slOrdPx"] = str(stop_loss_price)
+
         response = self.get_data_with_retry(endpoint, method="POST", data=order_data)
-        self.update_analysis_window(f"下单API响应: {response}")
+        self.log_and_update(f"下单API请求: {order_data}")
+        self.log_and_update(f"下单API响应: {response}")
 
         if response and 'data' in response:
             return response['data']
@@ -379,33 +420,72 @@ class TradingStrategy:
         if response and 'data' in response:
             return response['data']
         elif 'code' in response and 'msg' in response:
-            self.update_analysis_window(f"获取订单信息失败: {response['msg']} (错误码: {response['code']})")
+            self.log_and_update(f"获取订单信息失败: {response['msg']} (错误码: {response['code']})", logging.ERROR)
         return None
 
     def close_position(self, position):
+        if not self.open_positions:
+            self.log_and_update("没有持仓可以平仓", logging.WARNING)
+            return False
+
         current_price = self.get_current_price()
         if current_price is None:
-            self.update_analysis_window("无法获取当前价格，平仓失败")
-            return
+            self.log_and_update("无法获取当前价格，平仓失败", logging.WARNING)
+            return False
 
         side = "sell" if position['type'] == "buy" else "buy"
         pos_side = "long" if position['type'] == "buy" else "short"
 
-        order_result = self.place_order(side, pos_side, current_price, position['size'])
-        if order_result:
-            order_info = self.get_order_info(order_result[0].get('ordId'))
-            if order_info:
-                close_price = float(order_info[0].get('avgPx', current_price))
-                profit = (close_price - position['open_price']) * position['size'] if position['type'] == "buy" else (
-                                                                                     position['open_price'] - close_price) * position['size']
-                self.update_analysis_window(
-                    f"平仓成功: 开仓价={position['open_price']}, 平仓价={close_price}, 数量={position['size']} BTC, 盈亏={profit:.2f} USDT")
-                self.open_positions.remove(position)
-                self.update_balance()
+        symbol_info = self.get_symbol_info("BTC-USDT-SWAP")
+        if symbol_info is None:
+            self.log_and_update("无法获取交易品种信息，平仓失败", logging.ERROR)
+            return False
+
+        contract_val = symbol_info['contract_val']
+        num_contracts = position['size'] / contract_val
+        min_size = symbol_info['min_size']
+        adjusted_num_contracts = max(round(num_contracts / min_size) * min_size, min_size)
+
+        order_result = self.place_order(side, pos_side, adjusted_num_contracts)
+        self.log_and_update(f"平仓下单结果: {order_result}")
+
+        if order_result and isinstance(order_result, list) and len(order_result) > 0:
+            order_info = order_result[0]
+            if order_info.get('sCode') == '0':
+                order_id = order_info.get('ordId')
+                if order_id:
+                    order_status = self.check_order_status(order_id)
+
+                    if order_status == 'filled':
+                        close_price = float(order_info.get('avgPx', current_price))
+                        profit = (close_price - position['open_price']) * position['size'] if position[
+                                                                                                  'type'] == "buy" else (
+                                                                                                                                position[
+                                                                                                                                    'open_price'] - close_price) * \
+                                                                                                                        position[
+                                                                                                                            'size']
+                        self.log_and_update(
+                            f"平仓成功: 开仓价={position['open_price']:.2f}, 平仓价={close_price:.2f}, "
+                            f"数量={position['size']:.4f} BTC (合约张数: {adjusted_num_contracts:.4f}), 盈亏={profit:.2f} USDT")
+                        self.open_positions.remove(position)
+                        self.update_balance()
+                        return True
+                    elif order_status == 'pending':
+                        self.log_and_update(f"平仓订单已提交，但尚未完全成交。订单ID: {order_id}")
+                        return False
+                    else:
+                        self.log_and_update(f"平仓订单状态未知。订单ID: {order_id}, 状态: {order_status}",
+                                            logging.WARNING)
+                        return False
+                else:
+                    self.log_and_update(f"平仓下单成功，但未能获取订单ID。订单信息: {order_info}", logging.WARNING)
+                    return False
             else:
-                self.update_analysis_window("获取订单信息失败")
+                self.log_and_update(f"平仓下单失败: {order_info.get('sMsg')}", logging.WARNING)
+                return False
         else:
-            self.update_analysis_window("平仓失败")
+            self.log_and_update(f"平仓下单失败。返回结果: {order_result}", logging.WARNING)
+            return False
 
     def get_current_price(self):
         endpoint = "/api/v5/market/ticker?instId=BTC-USDT-SWAP"
@@ -427,28 +507,28 @@ class TradingStrategy:
                 profit_percentage = (current_price - position['open_price']) / position['open_price'] * 100
                 new_stop_loss = max(position['stop_loss_price'], position['open_price'] - ATR_MULTIPLIER * self.atr)
                 new_take_profit = max(position['take_profit_price'], position['open_price'] + TAKE_PROFIT * self.atr)
+                should_close = current_price <= new_stop_loss * 0.99 or current_price >= new_take_profit * 1.01
             elif position['type'] == "sell":
                 profit = (position['open_price'] - current_price) * position['size']
                 profit_percentage = (position['open_price'] - current_price) / position['open_price'] * 100
                 new_stop_loss = min(position['stop_loss_price'], position['open_price'] + ATR_MULTIPLIER * self.atr)
                 new_take_profit = min(position['take_profit_price'], position['open_price'] - TAKE_PROFIT * self.atr)
+                should_close = current_price >= new_stop_loss * 1.01 or current_price <= new_take_profit * 0.99
             else:
-                self.update_analysis_window("错误：无效的持仓方向")
-                return
+                self.log_and_update("错误：无效的持仓方向", logging.ERROR)
+                continue
 
-            if (position['type'] == "buy" and current_price <= new_stop_loss) or \
-                    (position['type'] == "sell" and current_price >= new_stop_loss):
-                self.update_analysis_window(f"触发止损: 当前价格={current_price:.2f}, 止损价={new_stop_loss:.2f}")
-                self.close_position(position)
-            elif (position['type'] == "buy" and current_price >= new_take_profit) or \
-                    (position['type'] == "sell" and current_price <= new_take_profit):
-                self.update_analysis_window(f"触发止盈: 当前价格={current_price:.2f}, 止盈价={new_take_profit:.2f}")
+            if should_close:
+                close_reason = '止损' if (position['type'] == "buy" and current_price <= new_stop_loss * 0.99) or (
+                        position['type'] == "sell" and current_price >= new_stop_loss * 1.01) else '止盈'
+                self.log_and_update(
+                    f"触发{close_reason}: 当前价格={current_price:.2f}, 目标价={new_stop_loss:.2f if close_reason == '止损' else new_take_profit:.2f}")
                 self.close_position(position)
             else:
                 position['stop_loss_price'] = new_stop_loss
                 position['take_profit_price'] = new_take_profit
 
-                self.update_analysis_window(
+                self.log_and_update(
                     f"持仓管理: 当前价格={current_price:.2f}, 开仓价={position['open_price']:.2f}, "
                     f"当前止损价={position['stop_loss_price']:.2f}, 当前止盈价={position['take_profit_price']:.2f}\n"
                     f"持仓方向: {position['type'].upper()}, 持仓量: {position['size']} BTC\n"
@@ -456,21 +536,21 @@ class TradingStrategy:
                 )
 
         if not self.open_positions:
-            self.update_analysis_window("所有持仓已平仓")
+            self.log_and_update("所有持仓已平仓")
 
     def pause(self):
         self.paused = True
-        self.update_analysis_window("交易策略已暂停")
+        self.log_and_update("交易策略已暂停")
 
     def resume(self):
         self.paused = False
-        self.update_analysis_window("交易策略已恢复")
+        self.log_and_update("交易策略已恢复")
 
     def run(self):
-        self.update_analysis_window("交易策略开始运行...")
+        self.log_and_update("交易策略开始运行...")
         self.account_balance = self.get_account_balance()
         if self.account_balance is None:
-            self.update_analysis_window("无法获取账户余额，策略停止运行")
+            self.log_and_update("无法获取账户余额，策略停止运行", logging.ERROR)
             return
 
         last_kline_update = 0
@@ -493,11 +573,11 @@ class TradingStrategy:
 
                 if time_diff.total_seconds() >= 1800:
                     if trade_count == 0:
-                        self.update_analysis_window("警告：过去30分钟内没有交易发生")
+                        self.log_and_update("警告：过去30分钟内没有交易发生", logging.WARNING)
                     elif trade_count < 3:
-                        self.update_analysis_window(f"警告：过去30分钟内交易次数较少，仅有 {trade_count} 次")
+                        self.log_and_update(f"警告：过去30分钟内交易次数较少，仅有 {trade_count} 次", logging.WARNING)
                     else:
-                        self.update_analysis_window(f"过去30分钟内交易次数：{trade_count}")
+                        self.log_and_update(f"过去30分钟内交易次数：{trade_count}")
 
                     trade_count = 0
                     last_check_time = current_time
@@ -506,23 +586,23 @@ class TradingStrategy:
                     if time.time() - order_time > 300:
                         order_status = self.check_order_status(order_id)
                         if order_status == 'filled':
-                            self.update_analysis_window(f"订单 {order_id} 已成交")
+                            self.log_and_update(f"订单 {order_id} 已成交")
                             del pending_orders[order_id]
                             trade_count += 1
                         elif order_status == 'failed':
-                            self.update_analysis_window(f"订单 {order_id} 已失败")
+                            self.log_and_update(f"订单 {order_id} 已失败", logging.WARNING)
                             del pending_orders[order_id]
                         elif order_status == 'pending':
-                            self.update_analysis_window(f"订单 {order_id} 仍在等待成交")
+                            self.log_and_update(f"订单 {order_id} 仍在等待成交")
                         else:
-                            self.update_analysis_window(f"订单 {order_id} 状态未知，考虑手动检查")
+                            self.log_and_update(f"订单 {order_id} 状态未知，考虑手动检查", logging.WARNING)
                             del pending_orders[order_id]
 
                 item = self.data_queue.get(timeout=5)
                 if 'last' in item:
                     current_price = float(item['last'])
                     current_time = time.time()
-                    self.update_analysis_window(f"当前价格: {current_price}")
+                    self.log_and_update(f"当前价格: {current_price}")
 
                     timestamps.append(datetime.datetime.now())
                     prices.append(current_price)
@@ -536,22 +616,22 @@ class TradingStrategy:
                         if kline_data:
                             self.update_indicators(kline_data)
                             last_kline_update = current_time
-                            self.update_analysis_window(f"K线数据已更新，共{len(kline_data)}条数据")
-                            self.update_analysis_window(
+                            self.log_and_update(f"K线数据已更新，共{len(kline_data)}条数据")
+                            self.log_and_update(
                                 f"当前指标: MA值={self.ma_values}, 趋势MA={self.trend_ma}, ATR={self.atr}")
                         else:
-                            self.update_analysis_window("无法获取K线数据")
+                            self.log_and_update("无法获取K线数据", logging.WARNING)
 
                     buy_condition, buy_reasons = self.check_buy_condition(current_price)
                     sell_condition, sell_reasons = self.check_sell_condition(current_price)
 
-                    self.update_analysis_window("策略分析:")
-                    self.update_analysis_window(f"做多条件满足: {buy_condition}")
+                    self.log_and_update("策略分析:")
+                    self.log_and_update(f"做多条件满足: {buy_condition}")
                     for reason in buy_reasons:
-                        self.update_analysis_window(f"  - {reason}")
-                    self.update_analysis_window(f"做空条件满足: {sell_condition}")
+                        self.log_and_update(f"  - {reason}")
+                    self.log_and_update(f"做空条件满足: {sell_condition}")
                     for reason in sell_reasons:
-                        self.update_analysis_window(f"  - {reason}")
+                        self.log_and_update(f"  - {reason}")
 
                 if self.account_balance is None:
                     self.update_balance()
@@ -561,24 +641,24 @@ class TradingStrategy:
                     if isinstance(order_result, dict) and 'ordId' in order_result:
                         pending_orders[order_result['ordId']] = time.time()
                     else:
-                        self.update_analysis_window(f"开仓失败或返回异常结果: {order_result}")
+                        self.log_and_update(f"开仓失败或返回异常结果: {order_result}", logging.WARNING)
                 elif sell_condition and self.atr is not None and self.atr > 0:
                     order_result = self.open_position("sell")
                     if isinstance(order_result, dict) and 'ordId' in order_result:
                         pending_orders[order_result['ordId']] = time.time()
                     else:
-                        self.update_analysis_window(f"开仓失败或返回异常结果: {order_result}")
+                        self.log_and_update(f"开仓失败或返回异常结果: {order_result}", logging.WARNING)
 
                 if self.open_positions:
                     self.manage_open_positions(current_price)
 
             except Empty:
-                self.update_analysis_window("等待数据...")
+                self.log_and_update("等待数据...", logging.DEBUG)
                 continue
             except Exception as e:
-                self.update_analysis_window(f"发生错误: {str(e)}")
-                self.update_analysis_window(f"错误详情: {traceback.format_exc()}")
+                self.log_and_update(f"发生错误: {str(e)}", logging.ERROR)
+                self.log_and_update(f"错误详情: {traceback.format_exc()}", logging.DEBUG)
                 time.sleep(5)
 
-        self.update_analysis_window("交易策略运行结束")
-        self.update_analysis_window(f"最终账户余额: {self.get_account_balance()} USDT")
+        self.log_and_update("交易策略运行结束")
+        self.log_and_update(f"最终账户余额: {self.get_account_balance()} USDT")
