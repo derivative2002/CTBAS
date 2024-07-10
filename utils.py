@@ -1,4 +1,4 @@
-import datetime
+import time
 
 def get_timestamp():
-    return datetime.datetime.utcnow().isoformat("T", "milliseconds") + "Z"
+    return str(int(time.time()))

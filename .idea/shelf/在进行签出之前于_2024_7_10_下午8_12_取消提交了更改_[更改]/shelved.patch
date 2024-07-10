@@ -1,0 +1,86 @@
+Index: main.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>import threading\r\nfrom queue import Queue\r\nfrom strategy_analysis_window import StrategyAnalysisWindow\r\nfrom trading_strategy import TradingStrategy\r\nfrom data_collector import DataCollector\r\nimport asyncio\r\nimport sys\r\nfrom PyQt5.QtWidgets import QApplication\r\n\r\ndef main():\r\n    app = QApplication(sys.argv)\r\n\r\n    # 创建数据队列\r\n    data_queue = Queue()\r\n\r\n    # 创建策略分析窗口\r\n    analysis_window = StrategyAnalysisWindow()\r\n\r\n    # 创建交易策略实例\r\n    strategy = TradingStrategy(data_queue, analysis_window)\r\n\r\n    # 设置策略实例给分析窗口\r\n    analysis_window.set_strategy(strategy)\r\n\r\n    # 创建数据收集器\r\n    data_collector = DataCollector(data_queue)\r\n\r\n    # 启动数据收集器（在新线程中）\r\n    collector_thread = threading.Thread(target=lambda: asyncio.run(data_collector.start()), daemon=True)\r\n    collector_thread.start()\r\n\r\n    # 启动交易策略（在新线程中）\r\n    strategy_thread = threading.Thread(target=strategy.start, daemon=True)\r\n    strategy_thread.start()\r\n\r\n    # 在主线程中运行分析窗口\r\n    analysis_window.show()\r\n    sys.exit(app.exec_())\r\n\r\nif __name__ == \"__main__\":\r\n    main()\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/main.py b/main.py
+--- a/main.py	
++++ b/main.py	
+@@ -1,41 +1,56 @@
++import sys
+ import threading
++import asyncio
+ from queue import Queue
++from PyQt5.QtWidgets import QApplication
++from PyQt5.QtCore import QTimer
++
+ from strategy_analysis_window import StrategyAnalysisWindow
+ from trading_strategy import TradingStrategy
+ from data_collector import DataCollector
+-import asyncio
+-import sys
+-from PyQt5.QtWidgets import QApplication
++
+ 
+ def main():
++    print("Starting the application...")
+     app = QApplication(sys.argv)
+ 
+-    # 创建数据队列
+     data_queue = Queue()
+-
+-    # 创建策略分析窗口
+     analysis_window = StrategyAnalysisWindow()
+-
+-    # 创建交易策略实例
+     strategy = TradingStrategy(data_queue, analysis_window)
+-
+-    # 设置策略实例给分析窗口
+     analysis_window.set_strategy(strategy)
+-
+-    # 创建数据收集器
+     data_collector = DataCollector(data_queue)
+ 
+-    # 启动数据收集器（在新线程中）
++    # 启动数据收集器
+     collector_thread = threading.Thread(target=lambda: asyncio.run(data_collector.start()), daemon=True)
+     collector_thread.start()
+ 
+-    # 启动交易策略（在新线程中）
+-    strategy_thread = threading.Thread(target=strategy.start, daemon=True)
++    # 启动交易策略
++    strategy_thread = threading.Thread(target=strategy.run, daemon=True)
+     strategy_thread.start()
+ 
+-    # 在主线程中运行分析窗口
++    # 使用QTimer来定期处理队列中的消息
++    def process_queue():
++        try:
++            while not data_queue.empty():
++                item = data_queue.get_nowait()
++                strategy.handle_data(item)
++        except Queue.Empty:
++            pass
++
++    timer = QTimer()
++    timer.timeout.connect(process_queue)
++    timer.start(100)  # 每100ms检查一次队列
++
+     analysis_window.show()
+-    sys.exit(app.exec_())
++
++    # 添加异常处理
++    try:
++        sys.exit(app.exec_())
++    except Exception as e:
++        print(f"An error occurred: {e}")
++        import traceback
++        traceback.print_exc()
++
+ 
+ if __name__ == "__main__":
+-    main()
++    main()
+\ No newline at end of file

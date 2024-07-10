@@ -1,0 +1,827 @@
+Index: utils.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>import datetime\r\n\r\ndef get_timestamp():\r\n    return datetime.datetime.utcnow().isoformat(\"T\", \"milliseconds\") + \"Z\"\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/utils.py b/utils.py
+--- a/utils.py	
++++ b/utils.py	
+@@ -1,4 +1,6 @@
+ import datetime
+ 
++import time
++
+ def get_timestamp():
+-    return datetime.datetime.utcnow().isoformat("T", "milliseconds") + "Z"
++    return str(int(time.time()))
+\ No newline at end of file
+Index: data_collector.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>import json\r\nimport datetime\r\nimport logging\r\nimport asyncio\r\nimport websockets\r\nfrom queue import Queue\r\n\r\nclass DataCollector:\r\n    def __init__(self, queue):\r\n        self.queue = queue\r\n        self.message_count = 0\r\n\r\n    async def on_message(self, message):\r\n        data = json.loads(message)\r\n        if 'data' in data:\r\n            for item in data['data']:\r\n                if item['instId'] == 'BTC-USDT-SWAP':\r\n                    current_time = datetime.datetime.utcnow()\r\n                    time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')\r\n                    self.message_count += 1\r\n                    logging.info(f\"{time_str}: YES 第{self.message_count}条\")\r\n                    item['timestamp'] = current_time.strftime('%Y-%m-%d %H:%M:%S')\r\n                    self.queue.put(item)\r\n\r\n    async def start(self):\r\n        uri = \"wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999\"\r\n        async with websockets.connect(uri) as websocket:\r\n            subscribe_message = {\r\n                \"op\": \"subscribe\",\r\n                \"args\": [{\"channel\": \"tickers\", \"instId\": \"BTC-USDT-SWAP\"}]\r\n            }\r\n            await websocket.send(json.dumps(subscribe_message))\r\n            async for message in websocket:\r\n                await self.on_message(message)\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/data_collector.py b/data_collector.py
+--- a/data_collector.py	
++++ b/data_collector.py	
+@@ -31,4 +31,4 @@
+             }
+             await websocket.send(json.dumps(subscribe_message))
+             async for message in websocket:
+-                await self.on_message(message)
++                await self.on_message(message)
+\ No newline at end of file
+Index: trading_strategy.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>import datetime\r\nimport json\r\nimport sys\r\nimport time\r\nimport hmac\r\nimport hashlib\r\nimport base64\r\nimport traceback\r\nimport logging\r\nimport numpy as np\r\nimport asyncio\r\nimport websockets\r\nfrom PyQt5.QtCore import QThread, pyqtSignal\r\nfrom queue import Empty\r\nfrom utils import get_timestamp\r\nfrom config import api_key, secret_key, passphrase, TAKE_PROFIT, MA_PERIODS, ATR_PERIOD, ATR_MULTIPLIER, RISK_PERCENT, TREND_MA_PERIOD\r\n\r\nclass TradingStrategy(QThread):\r\n    log_message_signal = pyqtSignal(str)\r\n    update_balance_signal = pyqtSignal(str, float, float)\r\n    update_position_info_signal = pyqtSignal(list)\r\n\r\n    def __init__(self, data_queue, analysis_window):\r\n        super().__init__()\r\n        self.api_key = api_key\r\n        self.secret_key = secret_key\r\n        self.passphrase = passphrase\r\n        self.data_queue = data_queue\r\n        self.analysis_window = analysis_window\r\n        self.paused = False\r\n        self.websocket = None\r\n\r\n        # 连接信号和槽\r\n        self.log_message_signal.connect(analysis_window.add_message_signal)\r\n        self.update_balance_signal.connect(analysis_window.update_balance_signal)\r\n        self.update_position_info_signal.connect(analysis_window.update_position_info_signal)\r\n\r\n        # 设置日志\r\n        self.logger = logging.getLogger(__name__)\r\n        self.logger.setLevel(logging.INFO)\r\n        handler = logging.StreamHandler()\r\n        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levellevel)s - %(message)s')\r\n        handler.setFormatter(formatter)\r\n        self.logger.addHandler(handler)\r\n\r\n    async def initialize_websocket(self):\r\n        uri = \"wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999\"\r\n        self.websocket = await websockets.connect(uri)\r\n        subscribe_message = {\r\n            \"op\": \"subscribe\",\r\n            \"args\": [\r\n                {\"channel\": \"account\", \"ccy\": \"USDT\"},\r\n                {\"channel\": \"positions\", \"instId\": \"BTC-USDT-SWAP\"},\r\n                {\"channel\": \"orders\", \"instId\": \"BTC-USDT-SWAP\"}\r\n            ]\r\n        }\r\n        await self.websocket.send(json.dumps(subscribe_message))\r\n\r\n    async def on_message(self, message):\r\n        data = json.loads(message)\r\n        if 'arg' in data:\r\n            channel = data['arg']['channel']\r\n            if channel == 'account':\r\n                self.handle_account_message(data)\r\n            elif channel == 'positions':\r\n                self.handle_positions_message(data)\r\n            elif channel == 'orders':\r\n                self.handle_orders_message(data)\r\n\r\n    def handle_account_message(self, message):\r\n        if 'data' in message:\r\n            balance_info = message['data'][0]\r\n            self.account_balance = float(balance_info['details'][0]['cashBal'])\r\n            self.update_balance()\r\n\r\n    def handle_positions_message(self, message):\r\n        if 'data' in message:\r\n            self.open_positions = message['data']\r\n            self.update_positions()\r\n\r\n    def handle_orders_message(self, message):\r\n        if 'data' in message:\r\n            order_info = message['data'][0]\r\n            self.log_and_update(f\"订单更新: {order_info}\")\r\n\r\n    async def send_order(self, side, pos_side, size):\r\n        order_message = {\r\n            \"op\": \"order\",\r\n            \"args\": [{\r\n                \"instId\": \"BTC-USDT-SWAP\",\r\n                \"tdMode\": \"cross\",\r\n                \"side\": side,\r\n                \"ordType\": \"market\",\r\n                \"sz\": f\"{size:.4f}\",\r\n                \"posSide\": pos_side,\r\n            }]\r\n        }\r\n        await self.websocket.send(json.dumps(order_message))\r\n\r\n    def initialize_strategy(self):\r\n        self.open_positions = []\r\n        self.strategy_status = \"空闲\"\r\n        self.account_balance = None\r\n        self.ma_values = np.zeros(len(MA_PERIODS))\r\n        self.prev_ma_values = np.zeros(len(MA_PERIODS))\r\n        self.trend_ma = 0\r\n        self.atr = 0\r\n\r\n    def log_and_update(self, message, level=logging.INFO):\r\n        \"\"\"统一的日志记录和UI更新方法\"\"\"\r\n        self.logger.log(level, message)\r\n        self.log_message_signal.emit(message)\r\n\r\n    def get_current_price(self):\r\n        endpoint = \"/api/v5/market/ticker?instId=BTC-USDT-SWAP\"\r\n        response = self.get_data_with_retry(endpoint)\r\n        if response and 'data' in response:\r\n            return float(response['data'][0]['last'])\r\n        return None\r\n\r\n    def get_data_with_retry(self, endpoint, method=\"GET\", params=None, data=None, max_retries=5, delay=2):\r\n        url = self.base_url + endpoint\r\n        for attempt in range(max_retries):\r\n            try:\r\n                timestamp = get_timestamp()\r\n                headers = {\r\n                    'Content-Type': 'application/json',\r\n                    'OK-ACCESS-KEY': self.api_key,\r\n                    'OK-ACCESS-SIGN': self.sign_message(timestamp, method, endpoint, json.dumps(data) if data else ''),\r\n                    'OK-ACCESS-TIMESTAMP': timestamp,\r\n                    'OK-ACCESS-PASSPHRASE': self.passphrase,\r\n                    'x-simulated-trading': '1',\r\n                }\r\n                if method == \"GET\":\r\n                    response = self.session.get(url, headers=headers, params=params, timeout=10)\r\n                else:\r\n                    response = self.session.post(url, headers=headers, json=data, timeout=10)\r\n                response.raise_for_status()\r\n                return response.json()\r\n            except RequestException as e:\r\n                self.log_and_update(f\"请求失败 (尝试 {attempt + 1}/{max_retries}): {e}\", logging.ERROR)\r\n                self.log_and_update(f\"请求详情: URL={url}, 方法={method}, 参数={params}, 数据={data}\", logging.DEBUG)\r\n                if attempt < max_retries - 1:\r\n                    time.sleep(delay)\r\n        self.log_and_update(\"所有重试都失败了\", logging.ERROR)\r\n        return None\r\n\r\n    def get_open_positions_value(self):\r\n        floating_profit = 0\r\n\r\n        for position in self.open_positions:\r\n            current_price = self.get_current_price()\r\n            if current_price is None:\r\n                continue\r\n\r\n            if position['type'] == \"buy\":\r\n                profit = (current_price - position['open_price']) * position['size']\r\n            else:  # sell\r\n                profit = (position['open_price'] - current_price) * position['size']\r\n\r\n            floating_profit += profit\r\n\r\n        return 0, floating_profit\r\n\r\n    def update_balance(self):\r\n        self.account_balance = self.get_account_balance()\r\n        positions_value, floating_profit = self.get_open_positions_value()\r\n        total_value = self.account_balance + floating_profit\r\n\r\n        self.update_balance_signal.emit(self.account_balance, floating_profit, total_value)\r\n\r\n    def get_position_summary(self, position):\r\n        if position is None:\r\n            return \"当前无持仓\"\r\n\r\n        current_price = self.get_current_price()\r\n        if current_price is None:\r\n            return \"无法获取当前价格\"\r\n\r\n        if position['type'] == \"buy\":\r\n            profit = (current_price - position['open_price']) * position['size']\r\n            profit_percentage = (current_price - position['open_price']) / position['open_price'] * 100\r\n        else:  # sell\r\n            profit = (position['open_price'] - current_price) * position['size']\r\n            profit_percentage = (position['open_price'] - current_price) / position['open_price'] * 100\r\n\r\n        return (\r\n            f\"持仓方向: {position['type'].upper()}\\n\"\r\n            f\"持仓量: {position['size']} BTC\\n\"\r\n            f\"开仓价: {position['open_price']:.2f}\\n\"\r\n            f\"当前价格: {current_price:.2f}\\n\"\r\n            f\"当前收益: {profit:.2f} USDT ({profit_percentage:.2f}%)\\n\"\r\n            f\"止损价: {position['stop_loss_price']:.2f}\\n\"\r\n            f\"止盈价: {position['take_profit_price']:.2f}\"\r\n        )\r\n\r\n    def get_kline_data(self):\r\n        endpoint = \"/api/v5/market/candles\"\r\n        params = {\r\n            'instId': 'BTC-USDT-SWAP',\r\n            'bar': '1m',\r\n            'limit': str(max(max(MA_PERIODS), TREND_MA_PERIOD, ATR_PERIOD + 1))\r\n        }\r\n        response = self.get_data_with_retry(endpoint, params=params)\r\n\r\n        if response and 'data' in response:\r\n            data = response['data']\r\n            if len(data) > 0:\r\n                self.log_and_update(f\"成功获取 {len(data)} 条K线数据\")\r\n                return data\r\n            else:\r\n                self.log_and_update(\"获取的K线数据为空\", logging.ERROR)\r\n        self.log_and_update(\"获取K线数据失败\", logging.ERROR)\r\n        return []\r\n\r\n    def update_indicators(self, kline_data):\r\n        if len(kline_data) < max(max(MA_PERIODS), TREND_MA_PERIOD, ATR_PERIOD + 1):\r\n            self.log_and_update(f\"K线数据不足，当前数据量: {len(kline_data)}\", logging.WARNING)\r\n            return\r\n\r\n        close_prices = np.array([float(k[4]) for k in kline_data])[::-1]\r\n        high_prices = np.array([float(k[2]) for k in kline_data])[::-1]\r\n        low_prices = np.array([float(k[3]) for k in kline_data])[::-1]\r\n\r\n        # 计算MA\r\n        for i, period in enumerate(MA_PERIODS):\r\n            self.prev_ma_values[i] = self.ma_values[i]\r\n            self.ma_values[i] = np.mean(close_prices[:period])\r\n\r\n        # 计算趋势MA\r\n        self.trend_ma = np.mean(close_prices[:TREND_MA_PERIOD])\r\n\r\n        # 计算ATR\r\n        self.atr = self.calculate_atr(high_prices, low_prices, close_prices, ATR_PERIOD)\r\n\r\n        if np.isnan(self.atr) or self.atr == 0:\r\n            self.log_and_update(\"ATR 计算结果无效\", logging.WARNING)\r\n            self.atr = None\r\n\r\n        self.log_and_update(\"指标更新完成\")\r\n        self.log_and_update(f\"MA values: {self.ma_values}\")\r\n        self.log_and_update(f\"Trend MA: {self.trend_ma}\")\r\n        self.log_and_update(f\"ATR: {self.atr}\")\r\n\r\n    def calculate_atr(self, high_prices, low_prices, close_prices, period):\r\n        tr = np.zeros(len(high_prices))\r\n        tr[0] = high_prices[0] - low_prices[0]\r\n        for i in range(1, len(high_prices)):\r\n            tr[i] = max(high_prices[i] - low_prices[i],\r\n                        abs(high_prices[i] - close_prices[i - 1]),\r\n                        abs(low_prices[i] - close_prices[i - 1]))\r\n\r\n        atr = np.zeros(len(tr))\r\n        atr[0] = tr[0]\r\n        for i in range(1, len(tr)):\r\n            atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period\r\n\r\n        return atr[-1]\r\n\r\n    def check_buy_condition(self, current_price):\r\n        if np.isnan(self.trend_ma) or current_price <= self.trend_ma:\r\n            return False, [\"价格未突破趋势MA\"]\r\n\r\n        for ma_value in self.ma_values:\r\n            if np.isnan(ma_value) or current_price <= ma_value:\r\n                return False, [\"价格未突破所有MA\"]\r\n\r\n        if self.prev_ma_values[2] is not None and self.get_previous_close_price() > self.prev_ma_values[2]:\r\n            return False, [\"上一根K线的收盘价未低于30日移动平均线\"]\r\n\r\n        return True, [\"所有做多条件满足\"]\r\n\r\n    def check_sell_condition(self, current_price):\r\n        if np.isnan(self.trend_ma) or current_price >= self.trend_ma:\r\n            return False, [\"价格未跌破趋势MA\"]\r\n\r\n        for ma_value in self.ma_values:\r\n            if np.isnan(ma_value) or current_price >= ma_value:\r\n                return False, [\"价格未跌破所有MA\"]\r\n\r\n        if self.prev_ma_values[2] is not None and self.get_previous_close_price() < self.prev_ma_values[2]:\r\n            return False, [\"上一根K线的收盘价未高于30日移动平均线\"]\r\n\r\n        return True, [\"所有做空条件满足\"]\r\n\r\n    def get_previous_close_price(self):\r\n        endpoint = \"/api/v5/market/ticker?instId=BTC-USDT-SWAP\"\r\n        response = self.get_data_with_retry(endpoint)\r\n        if response and 'data' in response:\r\n            return float(response['data'][0]['last'])\r\n        return None\r\n\r\n    def calculate_lot_size(self, account_balance, atr):\r\n        if atr is None or atr == 0:\r\n            self.log_and_update(\"ATR 为 0，无法计算交易量\", logging.WARNING)\r\n            return None\r\n\r\n        risk_amount = account_balance * RISK_PERCENT / 100.0\r\n        stop_loss_distance = ATR_MULTIPLIER * atr\r\n\r\n        current_price = self.get_current_price()\r\n        if current_price is None:\r\n            self.log_and_update(\"无法获取当前价格，无法计算交易量\", logging.WARNING)\r\n            return None\r\n\r\n        symbol_info = self.get_symbol_info(\"BTC-USDT-SWAP\")\r\n        if symbol_info is None:\r\n            self.log_and_update(\"无法获取完整的交易品种信息，使用默认值\", logging.WARNING)\r\n            return None\r\n\r\n        tick_size = symbol_info['tick_size']\r\n        tick_value = symbol_info['tick_value']\r\n\r\n        risk_per_lot = stop_loss_distance / tick_size * tick_value\r\n        lot_size = risk_amount / risk_per_lot\r\n\r\n        self.log_and_update(f\"计算的交易量: {lot_size:.4f} 手\")\r\n\r\n        return lot_size\r\n\r\n    def get_symbol_info(self, symbol):\r\n        endpoint = f\"/api/v5/public/instruments\"\r\n        params = {\r\n            'instType': 'SWAP',\r\n            'instId': symbol\r\n        }\r\n        response = self.get_data_with_retry(endpoint, params=params)\r\n        if response and 'data' in response:\r\n            if len(response['data']) > 0:\r\n                instrument_info = response['data'][0]\r\n                return {\r\n                    'tick_size': float(instrument_info.get('tickSz', '0.1')),\r\n                    'min_size': float(instrument_info.get('minSz', '0.1')),\r\n                    'max_size': float(instrument_info.get('maxSz', '100.0')),\r\n                    'step_size': float(instrument_info.get('lotSz', '0.1')),\r\n                    'tick_value': float(instrument_info.get('tickVal', '1')),\r\n                    'contract_val': float(instrument_info.get('ctVal', '0.001')),\r\n                    'contract_multiplier': float(instrument_info.get('ctMult', '1')),\r\n                    'max_leverage': float(instrument_info.get('lever', '100')),\r\n                    'contract_size': float(instrument_info.get('ctVal', '100')),\r\n                }\r\n            else:\r\n                self.log_and_update(\"获取的交易品种数据为空\", logging.WARNING)\r\n        else:\r\n            self.log_and_update(f\"无法获取交易品种信息，错误信息: {response.get('msg', '未知错误')}\", logging.ERROR)\r\n        return None\r\n\r\n    def open_position(self, order_type):\r\n        if self.account_balance is None:\r\n            self.update_balance()\r\n        if self.account_balance is None or self.account_balance <= 0:\r\n            self.log_and_update(\"账户余额不足，无法开仓\", logging.WARNING)\r\n            return None\r\n\r\n        lot_size = self.calculate_lot_size(self.account_balance, self.atr)\r\n        if lot_size is None:\r\n            return None\r\n\r\n        side = \"buy\" if order_type == \"buy\" else \"sell\"\r\n        pos_side = \"long\" if order_type == \"buy\" else \"short\"\r\n        current_price = self.get_current_price()\r\n        if current_price is None:\r\n            self.log_and_update(\"无法获取当前价格，开仓失败\", logging.WARNING)\r\n            return None\r\n\r\n        symbol_info = self.get_symbol_info(\"BTC-USDT-SWAP\")\r\n        if symbol_info is None:\r\n            self.log_and_update(\"无法获取交易品种信息，开仓失败\", logging.ERROR)\r\n            return None\r\n\r\n        contract_size = symbol_info['contract_val']\r\n        num_contracts = lot_size / contract_size\r\n\r\n        min_size = symbol_info['min_size']\r\n        adjusted_num_contracts = max(round(num_contracts / min_size) * min_size, min_size)\r\n\r\n        if adjusted_num_contracts < min_size:\r\n            self.log_and_update(f\"计算的交易量 ({adjusted_num_contracts:.4f} 张) 过小，无法开仓\", logging.WARNING)\r\n            return None\r\n\r\n        asyncio.run(self.send_order(side, pos_side, adjusted_num_contracts))\r\n        self.log_and_update(f\"已发送订单: {side} {adjusted_num_contracts} 手\")\r\n\r\n    def run(self):\r\n        asyncio.run(self.run_strategy())\r\n\r\n    async def run_strategy(self):\r\n        await self.initialize_websocket()\r\n        async for message in self.websocket:\r\n            await self.on_message(message)\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/trading_strategy.py b/trading_strategy.py
+--- a/trading_strategy.py	
++++ b/trading_strategy.py	
+@@ -1,15 +1,12 @@
+-import datetime
++import asyncio
++import websockets
+ import json
+-import sys
+ import time
+ import hmac
+ import hashlib
+ import base64
+-import traceback
+ import logging
+ import numpy as np
+-import asyncio
+-import websockets
+ from PyQt5.QtCore import QThread, pyqtSignal
+ from queue import Empty
+ from utils import get_timestamp
+@@ -19,6 +16,7 @@
+     log_message_signal = pyqtSignal(str)
+     update_balance_signal = pyqtSignal(str, float, float)
+     update_position_info_signal = pyqtSignal(list)
++    update_chart_signal = pyqtSignal(dict)
+ 
+     def __init__(self, data_queue, analysis_window):
+         super().__init__()
+@@ -27,76 +25,18 @@
+         self.passphrase = passphrase
+         self.data_queue = data_queue
+         self.analysis_window = analysis_window
++        self.websocket = None
+         self.paused = False
+-        self.websocket = None
+-
+-        # 连接信号和槽
+-        self.log_message_signal.connect(analysis_window.add_message_signal)
+-        self.update_balance_signal.connect(analysis_window.update_balance_signal)
+-        self.update_position_info_signal.connect(analysis_window.update_position_info_signal)
++        self.initialize_strategy()
+ 
+         # 设置日志
+         self.logger = logging.getLogger(__name__)
+         self.logger.setLevel(logging.INFO)
+         handler = logging.StreamHandler()
+-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levellevel)s - %(message)s')
++        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+         handler.setFormatter(formatter)
+         self.logger.addHandler(handler)
+ 
+-    async def initialize_websocket(self):
+-        uri = "wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999"
+-        self.websocket = await websockets.connect(uri)
+-        subscribe_message = {
+-            "op": "subscribe",
+-            "args": [
+-                {"channel": "account", "ccy": "USDT"},
+-                {"channel": "positions", "instId": "BTC-USDT-SWAP"},
+-                {"channel": "orders", "instId": "BTC-USDT-SWAP"}
+-            ]
+-        }
+-        await self.websocket.send(json.dumps(subscribe_message))
+-
+-    async def on_message(self, message):
+-        data = json.loads(message)
+-        if 'arg' in data:
+-            channel = data['arg']['channel']
+-            if channel == 'account':
+-                self.handle_account_message(data)
+-            elif channel == 'positions':
+-                self.handle_positions_message(data)
+-            elif channel == 'orders':
+-                self.handle_orders_message(data)
+-
+-    def handle_account_message(self, message):
+-        if 'data' in message:
+-            balance_info = message['data'][0]
+-            self.account_balance = float(balance_info['details'][0]['cashBal'])
+-            self.update_balance()
+-
+-    def handle_positions_message(self, message):
+-        if 'data' in message:
+-            self.open_positions = message['data']
+-            self.update_positions()
+-
+-    def handle_orders_message(self, message):
+-        if 'data' in message:
+-            order_info = message['data'][0]
+-            self.log_and_update(f"订单更新: {order_info}")
+-
+-    async def send_order(self, side, pos_side, size):
+-        order_message = {
+-            "op": "order",
+-            "args": [{
+-                "instId": "BTC-USDT-SWAP",
+-                "tdMode": "cross",
+-                "side": side,
+-                "ordType": "market",
+-                "sz": f"{size:.4f}",
+-                "posSide": pos_side,
+-            }]
+-        }
+-        await self.websocket.send(json.dumps(order_message))
+-
+     def initialize_strategy(self):
+         self.open_positions = []
+         self.strategy_status = "空闲"
+@@ -105,113 +45,157 @@
+         self.prev_ma_values = np.zeros(len(MA_PERIODS))
+         self.trend_ma = 0
+         self.atr = 0
++        self.current_price = None
+ 
+     def log_and_update(self, message, level=logging.INFO):
+-        """统一的日志记录和UI更新方法"""
+         self.logger.log(level, message)
+         self.log_message_signal.emit(message)
+ 
+-    def get_current_price(self):
+-        endpoint = "/api/v5/market/ticker?instId=BTC-USDT-SWAP"
+-        response = self.get_data_with_retry(endpoint)
+-        if response and 'data' in response:
+-            return float(response['data'][0]['last'])
+-        return None
++    def sign_message(self, timestamp, method, request_path, body=''):
++        message = timestamp + method + request_path + body
++        hmac_key = bytes(self.secret_key, 'utf-8')
++        message_bytes = bytes(message, 'utf-8')
++        signature = hmac.new(hmac_key, message_bytes, hashlib.sha256).digest()
++        signature_base64 = base64.b64encode(signature).decode()
++        return signature_base64
+ 
+-    def get_data_with_retry(self, endpoint, method="GET", params=None, data=None, max_retries=5, delay=2):
+-        url = self.base_url + endpoint
++    async def initialize_websocket(self):
++        uri = "wss://wspap.okx.com:8443/ws/v5/private"
++        headers = {"x-simulated-trading": "1"}
++        try:
++            self.websocket = await asyncio.wait_for(websockets.connect(uri, extra_headers=headers), timeout=30)
++            self.log_and_update("WebSocket connection established")
++            if await self.login():
++                await self.subscribe_channels()
++            else:
++                raise Exception("Login failed")
++        except asyncio.TimeoutError:
++            self.log_and_update("WebSocket connection timed out", logging.ERROR)
++        except Exception as e:
++            self.log_and_update(f"Failed to connect to WebSocket: {str(e)}", logging.ERROR)
++
++    async def login(self):
++        max_retries = 3
+         for attempt in range(max_retries):
+-            try:
+-                timestamp = get_timestamp()
+-                headers = {
+-                    'Content-Type': 'application/json',
+-                    'OK-ACCESS-KEY': self.api_key,
+-                    'OK-ACCESS-SIGN': self.sign_message(timestamp, method, endpoint, json.dumps(data) if data else ''),
+-                    'OK-ACCESS-TIMESTAMP': timestamp,
+-                    'OK-ACCESS-PASSPHRASE': self.passphrase,
+-                    'x-simulated-trading': '1',
+-                }
+-                if method == "GET":
+-                    response = self.session.get(url, headers=headers, params=params, timeout=10)
+-                else:
+-                    response = self.session.post(url, headers=headers, json=data, timeout=10)
+-                response.raise_for_status()
+-                return response.json()
+-            except RequestException as e:
+-                self.log_and_update(f"请求失败 (尝试 {attempt + 1}/{max_retries}): {e}", logging.ERROR)
+-                self.log_and_update(f"请求详情: URL={url}, 方法={method}, 参数={params}, 数据={data}", logging.DEBUG)
+-                if attempt < max_retries - 1:
+-                    time.sleep(delay)
+-        self.log_and_update("所有重试都失败了", logging.ERROR)
+-        return None
++            timestamp = get_timestamp()
++            sign = self.sign_message(timestamp, 'GET', '/users/self/verify', '')
++            login_message = {
++                "op": "login",
++                "args": [{
++                    "apiKey": self.api_key,
++                    "passphrase": self.passphrase,
++                    "timestamp": timestamp,
++                    "sign": sign
++                }]
++            }
++            await self.websocket.send(json.dumps(login_message))
++            response = await self.websocket.recv()
++            self.log_and_update(f"Login response: {response}")
++
++            response_data = json.loads(response)
++            if response_data.get('event') == 'login':
++                self.log_and_update("Login successful")
++                return True
++            elif response_data.get('code') == '60004':  # Invalid timestamp
++                self.log_and_update(f"Invalid timestamp. Retrying... (Attempt {attempt + 1}/{max_retries})")
++                await asyncio.sleep(1)  # Wait for 1 second before retrying
++            else:
++                self.log_and_update(f"Login failed: {response_data.get('msg')}")
++                return False
++
++        self.log_and_update("Max login attempts reached. Login failed.")
++        return False
++
++    async def subscribe_channels(self):
++        subscribe_message = {
++            "op": "subscribe",
++            "args": [
++                {"channel": "account", "ccy": "USDT"},
++                {"channel": "positions", "instId": "BTC-USDT-SWAP"},
++                {"channel": "orders", "instId": "BTC-USDT-SWAP"},
++                {"channel": "tickers", "instId": "BTC-USDT-SWAP"},
++                {"channel": "candle1m", "instId": "BTC-USDT-SWAP"}
++            ]
++        }
++        await self.websocket.send(json.dumps(subscribe_message))
++        self.log_and_update("Channels subscription message sent")
++
++    async def handle_message(self, message):
++        self.log_and_update(f"Received message: {message}")
++        if 'event' in message:
++            if message['event'] == 'subscribe':
++                self.log_and_update(f"Successfully subscribed to {message['arg']['channel']}")
++        elif 'data' in message:
++            channel = message['arg']['channel']
++            if channel == 'account':
++                self.handle_account_update(message['data'])
++            elif channel == 'positions':
++                self.handle_position_update(message['data'])
++            elif channel == 'orders':
++                self.handle_order_update(message['data'])
++            elif channel == 'tickers':
++                self.handle_ticker_update(message['data'])
++            elif channel == 'candle1m':
++                self.handle_kline_data(message['data'])
++        else:
++            self.log_and_update(f"Unhandled message type: {message}")
++
++    def handle_account_update(self, data):
++        if data and len(data) > 0:
++            details = data[0].get('details', [])
++            if details and len(details) > 0:
++                self.account_balance = float(details[0].get('availBal', 0))
++                self.update_balance()
++
++    def handle_position_update(self, data):
++        self.open_positions = data
++        self.update_positions()
++
++    def handle_order_update(self, data):
++        self.log_and_update(f"Order update: {data}")
++
++    def handle_ticker_update(self, data):
++        self.current_price = float(data[0]['last'])
++        self.log_and_update(f"Updated current price: {self.current_price}")
++        self.check_and_execute_strategy()
++
++    def update_balance(self):
++        positions_value, floating_profit = self.get_open_positions_value()
++        total_value = self.account_balance + floating_profit
++        self.update_balance_signal.emit("USDT", self.account_balance, floating_profit)
+ 
+     def get_open_positions_value(self):
+         floating_profit = 0
+-
+         for position in self.open_positions:
+-            current_price = self.get_current_price()
+-            if current_price is None:
++            if self.current_price is None:
+                 continue
+-
+-            if position['type'] == "buy":
+-                profit = (current_price - position['open_price']) * position['size']
+-            else:  # sell
+-                profit = (position['open_price'] - current_price) * position['size']
+-
++            if position['posSide'] == 'long':
++                profit = (self.current_price - float(position['avgPx'])) * float(position['pos'])
++            else:  # short
++                profit = (float(position['avgPx']) - self.current_price) * float(position['pos'])
+             floating_profit += profit
+-
+         return 0, floating_profit
+ 
+-    def update_balance(self):
+-        self.account_balance = self.get_account_balance()
+-        positions_value, floating_profit = self.get_open_positions_value()
+-        total_value = self.account_balance + floating_profit
+-
+-        self.update_balance_signal.emit(self.account_balance, floating_profit, total_value)
++    def update_positions(self):
++        position_info = []
++        for position in self.open_positions:
++            position_info.append([
++                position['posSide'],
++                position['pos'],
++                position['avgPx'],
++                str(self.current_price),
++                str(float(position['upl']))
++            ])
++        self.update_position_info_signal.emit(position_info)
+ 
+-    def get_position_summary(self, position):
+-        if position is None:
+-            return "当前无持仓"
++    def handle_kline_data(self, data):
++        self.log_and_update(f"Received K-line data: {data}")
++        self.update_indicators(data)
+ 
+-        current_price = self.get_current_price()
+-        if current_price is None:
+-            return "无法获取当前价格"
+-
+-        if position['type'] == "buy":
+-            profit = (current_price - position['open_price']) * position['size']
+-            profit_percentage = (current_price - position['open_price']) / position['open_price'] * 100
+-        else:  # sell
+-            profit = (position['open_price'] - current_price) * position['size']
+-            profit_percentage = (position['open_price'] - current_price) / position['open_price'] * 100
+-
+-        return (
+-            f"持仓方向: {position['type'].upper()}\n"
+-            f"持仓量: {position['size']} BTC\n"
+-            f"开仓价: {position['open_price']:.2f}\n"
+-            f"当前价格: {current_price:.2f}\n"
+-            f"当前收益: {profit:.2f} USDT ({profit_percentage:.2f}%)\n"
+-            f"止损价: {position['stop_loss_price']:.2f}\n"
+-            f"止盈价: {position['take_profit_price']:.2f}"
+-        )
+-
+-    def get_kline_data(self):
+-        endpoint = "/api/v5/market/candles"
+-        params = {
+-            'instId': 'BTC-USDT-SWAP',
+-            'bar': '1m',
+-            'limit': str(max(max(MA_PERIODS), TREND_MA_PERIOD, ATR_PERIOD + 1))
+-        }
+-        response = self.get_data_with_retry(endpoint, params=params)
+-
+-        if response and 'data' in response:
+-            data = response['data']
+-            if len(data) > 0:
+-                self.log_and_update(f"成功获取 {len(data)} 条K线数据")
+-                return data
+-            else:
+-                self.log_and_update("获取的K线数据为空", logging.ERROR)
+-        self.log_and_update("获取K线数据失败", logging.ERROR)
+-        return []
++    def handle_data(self, item):
++        if 'last' in item:
++            self.current_price = float(item['last'])
++            self.check_and_execute_strategy()
+ 
+     def update_indicators(self, kline_data):
+         if len(kline_data) < max(max(MA_PERIODS), TREND_MA_PERIOD, ATR_PERIOD + 1):
+@@ -222,25 +206,14 @@
+         high_prices = np.array([float(k[2]) for k in kline_data])[::-1]
+         low_prices = np.array([float(k[3]) for k in kline_data])[::-1]
+ 
+-        # 计算MA
+         for i, period in enumerate(MA_PERIODS):
+             self.prev_ma_values[i] = self.ma_values[i]
+             self.ma_values[i] = np.mean(close_prices[:period])
+ 
+-        # 计算趋势MA
+         self.trend_ma = np.mean(close_prices[:TREND_MA_PERIOD])
+-
+-        # 计算ATR
+         self.atr = self.calculate_atr(high_prices, low_prices, close_prices, ATR_PERIOD)
+ 
+-        if np.isnan(self.atr) or self.atr == 0:
+-            self.log_and_update("ATR 计算结果无效", logging.WARNING)
+-            self.atr = None
+-
+-        self.log_and_update("指标更新完成")
+-        self.log_and_update(f"MA values: {self.ma_values}")
+-        self.log_and_update(f"Trend MA: {self.trend_ma}")
+-        self.log_and_update(f"ATR: {self.atr}")
++        self.log_and_update(f"Indicators updated - MA values: {self.ma_values}, Trend MA: {self.trend_ma}, ATR: {self.atr}")
+ 
+     def calculate_atr(self, high_prices, low_prices, close_prices, period):
+         tr = np.zeros(len(high_prices))
+@@ -257,134 +230,148 @@
+ 
+         return atr[-1]
+ 
++    def check_and_execute_strategy(self):
++        if self.current_price is None or self.atr == 0:
++            self.log_and_update("Strategy check skipped: current price or ATR is not available")
++            return
++
++        buy_condition, buy_reasons = self.check_buy_condition(self.current_price)
++        sell_condition, sell_reasons = self.check_sell_condition(self.current_price)
++
++        self.log_and_update(f"Strategy check - Buy condition: {buy_condition}, Sell condition: {sell_condition}")
++
++        if buy_condition:
++            self.log_and_update(f"Buy signal triggered: {', '.join(buy_reasons)}")
++            asyncio.create_task(self.open_position("buy"))
++        elif sell_condition:
++            self.log_and_update(f"Sell signal triggered: {', '.join(sell_reasons)}")
++            asyncio.create_task(self.open_position("sell"))
++        else:
++            self.log_and_update("No trading signal")
++
+     def check_buy_condition(self, current_price):
+         if np.isnan(self.trend_ma) or current_price <= self.trend_ma:
+-            return False, ["价格未突破趋势MA"]
++            return False, ["Price below trend MA"]
+ 
+         for ma_value in self.ma_values:
+             if np.isnan(ma_value) or current_price <= ma_value:
+-                return False, ["价格未突破所有MA"]
++                return False, ["Price below some MA"]
+ 
+-        if self.prev_ma_values[2] is not None and self.get_previous_close_price() > self.prev_ma_values[2]:
+-            return False, ["上一根K线的收盘价未低于30日移动平均线"]
++        if self.prev_ma_values[2] is not None and self.current_price > self.prev_ma_values[2]:
++            return False, ["Previous close price not below 30-day MA"]
+ 
+-        return True, ["所有做多条件满足"]
++        return True, ["All buy conditions met"]
+ 
+     def check_sell_condition(self, current_price):
+         if np.isnan(self.trend_ma) or current_price >= self.trend_ma:
+-            return False, ["价格未跌破趋势MA"]
++            return False, ["Price above trend MA"]
+ 
+         for ma_value in self.ma_values:
+             if np.isnan(ma_value) or current_price >= ma_value:
+-                return False, ["价格未跌破所有MA"]
++                return False, ["Price above some MA"]
++
++        if self.prev_ma_values[2] is not None and self.current_price < self.prev_ma_values[2]:
++            return False, ["Previous close price not above 30-day MA"]
+ 
+-        if self.prev_ma_values[2] is not None and self.get_previous_close_price() < self.prev_ma_values[2]:
+-            return False, ["上一根K线的收盘价未高于30日移动平均线"]
++        return True, ["All sell conditions met"]
+ 
+-        return True, ["所有做空条件满足"]
++    async def open_position(self, order_type):
++        if self.account_balance is None or self.account_balance <= 0:
++            self.log_and_update("Insufficient account balance", logging.WARNING)
++            return
+ 
+-    def get_previous_close_price(self):
+-        endpoint = "/api/v5/market/ticker?instId=BTC-USDT-SWAP"
+-        response = self.get_data_with_retry(endpoint)
+-        if response and 'data' in response:
+-            return float(response['data'][0]['last'])
+-        return None
++        lot_size = self.calculate_lot_size(self.account_balance, self.atr)
++        if lot_size is None:
++            return
++
++        side = "buy" if order_type == "buy" else "sell"
++        pos_side = "long" if order_type == "buy" else "short"
++
++        await self.send_order(side, pos_side, lot_size)
++        self.log_and_update(f"Order sent: {side} {lot_size} contracts")
+ 
+     def calculate_lot_size(self, account_balance, atr):
+         if atr is None or atr == 0:
+-            self.log_and_update("ATR 为 0，无法计算交易量", logging.WARNING)
++            self.log_and_update("ATR is zero, cannot calculate lot size", logging.WARNING)
+             return None
+ 
+         risk_amount = account_balance * RISK_PERCENT / 100.0
+         stop_loss_distance = ATR_MULTIPLIER * atr
+ 
+-        current_price = self.get_current_price()
+-        if current_price is None:
+-            self.log_and_update("无法获取当前价格，无法计算交易量", logging.WARNING)
++        if self.current_price is None:
++            self.log_and_update("Current price is not available", logging.WARNING)
+             return None
+ 
+-        symbol_info = self.get_symbol_info("BTC-USDT-SWAP")
+-        if symbol_info is None:
+-            self.log_and_update("无法获取完整的交易品种信息，使用默认值", logging.WARNING)
+-            return None
+-
+-        tick_size = symbol_info['tick_size']
+-        tick_value = symbol_info['tick_value']
++        contract_value = 100  # Assuming 1 contract = 100 USD for BTC-USDT-SWAP
++        risk_per_contract = stop_loss_distance * contract_value
++        lot_size = risk_amount / risk_per_contract
+ 
+-        risk_per_lot = stop_loss_distance / tick_size * tick_value
+-        lot_size = risk_amount / risk_per_lot
++        return max(round(lot_size), 1)  # Ensure at least 1 contract
+ 
+-        self.log_and_update(f"计算的交易量: {lot_size:.4f} 手")
++    async def send_order(self, side, pos_side, size):
++        order_message = {
++            "op": "order",
++            "args": [{
++                "instId": "BTC-USDT-SWAP",
++                "tdMode": "cross",
++                "side": side,
++                "ordType": "market",
++                "sz": str(size),
++                "posSide": pos_side,
++            }]
++        }
++        await self.websocket.send(json.dumps(order_message))
+ 
+-        return lot_size
+-
+-    def get_symbol_info(self, symbol):
+-        endpoint = f"/api/v5/public/instruments"
+-        params = {
+-            'instType': 'SWAP',
+-            'instId': symbol
+-        }
+-        response = self.get_data_with_retry(endpoint, params=params)
+-        if response and 'data' in response:
+-            if len(response['data']) > 0:
+-                instrument_info = response['data'][0]
+-                return {
+-                    'tick_size': float(instrument_info.get('tickSz', '0.1')),
+-                    'min_size': float(instrument_info.get('minSz', '0.1')),
+-                    'max_size': float(instrument_info.get('maxSz', '100.0')),
+-                    'step_size': float(instrument_info.get('lotSz', '0.1')),
+-                    'tick_value': float(instrument_info.get('tickVal', '1')),
+-                    'contract_val': float(instrument_info.get('ctVal', '0.001')),
+-                    'contract_multiplier': float(instrument_info.get('ctMult', '1')),
+-                    'max_leverage': float(instrument_info.get('lever', '100')),
+-                    'contract_size': float(instrument_info.get('ctVal', '100')),
+-                }
+-            else:
+-                self.log_and_update("获取的交易品种数据为空", logging.WARNING)
+-        else:
+-            self.log_and_update(f"无法获取交易品种信息，错误信息: {response.get('msg', '未知错误')}", logging.ERROR)
+-        return None
+-
+-    def open_position(self, order_type):
+-        if self.account_balance is None:
+-            self.update_balance()
+-        if self.account_balance is None or self.account_balance <= 0:
+-            self.log_and_update("账户余额不足，无法开仓", logging.WARNING)
+-            return None
+-
+-        lot_size = self.calculate_lot_size(self.account_balance, self.atr)
+-        if lot_size is None:
+-            return None
+-
+-        side = "buy" if order_type == "buy" else "sell"
+-        pos_side = "long" if order_type == "buy" else "short"
+-        current_price = self.get_current_price()
+-        if current_price is None:
+-            self.log_and_update("无法获取当前价格，开仓失败", logging.WARNING)
+-            return None
++    async def run_strategy(self):
++        max_retries = 5
++        retry_delay = 5
++        for attempt in range(max_retries):
++            try:
++                await self.initialize_websocket()
++                self.log_and_update("Strategy running...")
++                while True:
++                    if not self.paused:
++                        try:
++                            message = await asyncio.wait_for(self.websocket.recv(), timeout=30)
++                            await self.handle_message(json.loads(message))
++                        except asyncio.TimeoutError:
++                            self.log_and_update("WebSocket receive timed out, reconnecting...", logging.WARNING)
++                            break
++                        except websockets.exceptions.ConnectionClosed:
++                            self.log_and_update("WebSocket connection closed, reconnecting...", logging.WARNING)
++                            break
++                        except Exception as e:
++                            self.log_and_update(f"Error handling message: {str(e)}", logging.ERROR)
++                            import traceback
++                            traceback.print_exc()
++                    else:
++                        await asyncio.sleep(1)
++            except Exception as e:
++                self.log_and_update(f"Error in run_strategy: {str(e)}", logging.ERROR)
++                import traceback
++                traceback.print_exc()
++
++            if attempt < max_retries - 1:
++                self.log_and_update(f"Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})",
++                                    logging.INFO)
++                await asyncio.sleep(retry_delay)
++            else:
++                self.log_and_update("Max retries reached. Stopping strategy.", logging.ERROR)
++                break
+ 
+-        symbol_info = self.get_symbol_info("BTC-USDT-SWAP")
+-        if symbol_info is None:
+-            self.log_and_update("无法获取交易品种信息，开仓失败", logging.ERROR)
+-            return None
+-
+-        contract_size = symbol_info['contract_val']
+-        num_contracts = lot_size / contract_size
+-
+-        min_size = symbol_info['min_size']
+-        adjusted_num_contracts = max(round(num_contracts / min_size) * min_size, min_size)
+-
+-        if adjusted_num_contracts < min_size:
+-            self.log_and_update(f"计算的交易量 ({adjusted_num_contracts:.4f} 张) 过小，无法开仓", logging.WARNING)
+-            return None
+-
+-        asyncio.run(self.send_order(side, pos_side, adjusted_num_contracts))
+-        self.log_and_update(f"已发送订单: {side} {adjusted_num_contracts} 手")
++        self.log_and_update("Strategy stopped.")
+ 
+     def run(self):
++        print("Starting the trading strategy...")
+         asyncio.run(self.run_strategy())
+ 
+-    async def run_strategy(self):
+-        await self.initialize_websocket()
+-        async for message in self.websocket:
+-            await self.on_message(message)
++    def pause(self):
++        self.paused = True
++        self.log_and_update("Strategy paused")
++
++    def resume(self):
++        self.paused = False
++        self.log_and_update("Strategy resumed")
++
++    def start(self):
++        self.run()
+\ No newline at end of file
+Index: strategy_analysis_window.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>import sys\r\nfrom PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem\r\nfrom PyQt5.QtCore import pyqtSignal, pyqtSlot, QObject\r\nfrom strategy_analysis_window_ui import Ui_CTBAS\r\n\r\nclass StrategyAnalysisWindow(QMainWindow, Ui_CTBAS):\r\n    add_message_signal = pyqtSignal(str)\r\n    update_balance_signal = pyqtSignal(str, float, float)\r\n    update_position_info_signal = pyqtSignal(list)\r\n\r\n    def __init__(self):\r\n        super().__init__()\r\n        self.setupUi(self)\r\n        self.pushButton.clicked.connect(self.pause_strategy)\r\n        self.pushButton_2.clicked.connect(self.resume_strategy)\r\n\r\n        self.add_message_signal.connect(self.add_message)\r\n        self.update_balance_signal.connect(self.update_balance)\r\n        self.update_position_info_signal.connect(self.update_position_info)\r\n\r\n    @pyqtSlot(str)\r\n    def add_message(self, message):\r\n        self.textEdit.append(message)\r\n\r\n    @pyqtSlot(str, float, float)\r\n    def update_balance(self, account_name, balance, floating_profit):\r\n        self.label.setText(f'当前账户名称: {account_name}')\r\n        self.label_2.setText(f'账户余额: {balance:.2f} USDT')\r\n        self.label_3.setText(f'浮动收益: {floating_profit:.2f} USDT')\r\n\r\n    @pyqtSlot(list)\r\n    def update_position_info(self, positions):\r\n        self.tableWidget.setRowCount(len(positions))\r\n        for row, position in enumerate(positions):\r\n            for column, data in enumerate(position):\r\n                self.tableWidget.setItem(row, column, QTableWidgetItem(data))\r\n\r\n    def set_strategy(self, strategy):\r\n        self.strategy = strategy\r\n\r\n    def pause_strategy(self):\r\n        self.strategy.pause()\r\n\r\n    def resume_strategy(self):\r\n        self.strategy.resume()\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/strategy_analysis_window.py b/strategy_analysis_window.py
+--- a/strategy_analysis_window.py	
++++ b/strategy_analysis_window.py	
+@@ -1,26 +1,26 @@
+-import sys
+-from PyQt5.QtWidgets import QApplication, QMainWindow, QTableWidgetItem
+-from PyQt5.QtCore import pyqtSignal, pyqtSlot, QObject
++from PyQt5.QtWidgets import QMainWindow, QTableWidgetItem, QMessageBox
++from PyQt5.QtCore import pyqtSlot
+ from strategy_analysis_window_ui import Ui_CTBAS
+ 
+ class StrategyAnalysisWindow(QMainWindow, Ui_CTBAS):
+-    add_message_signal = pyqtSignal(str)
+-    update_balance_signal = pyqtSignal(str, float, float)
+-    update_position_info_signal = pyqtSignal(list)
+-
+     def __init__(self):
+         super().__init__()
+         self.setupUi(self)
+         self.pushButton.clicked.connect(self.pause_strategy)
+         self.pushButton_2.clicked.connect(self.resume_strategy)
+ 
+-        self.add_message_signal.connect(self.add_message)
+-        self.update_balance_signal.connect(self.update_balance)
+-        self.update_position_info_signal.connect(self.update_position_info)
++    def set_strategy(self, strategy):
++        self.strategy = strategy
++        self.strategy.log_message_signal.connect(self.add_message)
++        self.strategy.update_balance_signal.connect(self.update_balance)
++        self.strategy.update_position_info_signal.connect(self.update_position_info)
+ 
+     @pyqtSlot(str)
+     def add_message(self, message):
+         self.textEdit.append(message)
++        self.textEdit.verticalScrollBar().setValue(
++            self.textEdit.verticalScrollBar().maximum()
++        )
+ 
+     @pyqtSlot(str, float, float)
+     def update_balance(self, account_name, balance, floating_profit):
+@@ -33,13 +33,15 @@
+         self.tableWidget.setRowCount(len(positions))
+         for row, position in enumerate(positions):
+             for column, data in enumerate(position):
+-                self.tableWidget.setItem(row, column, QTableWidgetItem(data))
+-
+-    def set_strategy(self, strategy):
+-        self.strategy = strategy
++                self.tableWidget.setItem(row, column, QTableWidgetItem(str(data)))
+ 
+     def pause_strategy(self):
+-        self.strategy.pause()
++        if hasattr(self, 'strategy'):
++            self.strategy.pause()
+ 
+     def resume_strategy(self):
+-        self.strategy.resume()
++        if hasattr(self, 'strategy'):
++            self.strategy.resume()
++
++    def show_error(self, message):
++        QMessageBox.critical(self, "Error", message)
+\ No newline at end of file
+Index: .idea/workspace.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<project version=\"4\">\r\n  <component name=\"AutoImportSettings\">\r\n    <option name=\"autoReloadType\" value=\"SELECTIVE\" />\r\n  </component>\r\n  <component name=\"ChangeListManager\">\r\n    <list default=\"true\" id=\"2460e50a-2a04-4d6b-a7e1-7dab60981424\" name=\"更改\" comment=\"解决了提交止盈止损委托的问题，同时优化了窗口显示\">\r\n      <change afterPath=\"$PROJECT_DIR$/strategy_analysis_window.ui\" afterDir=\"false\" />\r\n      <change afterPath=\"$PROJECT_DIR$/strategy_analysis_window_ui.py\" afterDir=\"false\" />\r\n      <change beforePath=\"$PROJECT_DIR$/.idea/workspace.xml\" beforeDir=\"false\" afterPath=\"$PROJECT_DIR$/.idea/workspace.xml\" afterDir=\"false\" />\r\n      <change beforePath=\"$PROJECT_DIR$/main.py\" beforeDir=\"false\" afterPath=\"$PROJECT_DIR$/main.py\" afterDir=\"false\" />\r\n      <change beforePath=\"$PROJECT_DIR$/strategy_analysis_window.py\" beforeDir=\"false\" afterPath=\"$PROJECT_DIR$/strategy_analysis_window.py\" afterDir=\"false\" />\r\n      <change beforePath=\"$PROJECT_DIR$/trading_strategy.py\" beforeDir=\"false\" afterPath=\"$PROJECT_DIR$/trading_strategy.py\" afterDir=\"false\" />\r\n    </list>\r\n    <option name=\"SHOW_DIALOG\" value=\"false\" />\r\n    <option name=\"HIGHLIGHT_CONFLICTS\" value=\"true\" />\r\n    <option name=\"HIGHLIGHT_NON_ACTIVE_CHANGELIST\" value=\"false\" />\r\n    <option name=\"LAST_RESOLUTION\" value=\"IGNORE\" />\r\n  </component>\r\n  <component name=\"Git.Settings\">\r\n    <branch-grouping />\r\n    <option name=\"RECENT_BRANCH_BY_REPOSITORY\">\r\n      <map>\r\n        <entry key=\"$PROJECT_DIR$\" value=\"V1.4\" />\r\n      </map>\r\n    </option>\r\n    <option name=\"RECENT_GIT_ROOT_PATH\" value=\"$PROJECT_DIR$\" />\r\n  </component>\r\n  <component name=\"GitHubPullRequestSearchHistory\">{\r\n  &quot;lastFilter&quot;: {\r\n    &quot;state&quot;: &quot;OPEN&quot;,\r\n    &quot;assignee&quot;: &quot;derivative2002&quot;\r\n  }\r\n}</component>\r\n  <component name=\"GithubDefaultAccount\">\r\n    <option name=\"defaultAccountId\" value=\"7d34d820-0ba8-4d20-bae6-031c6cfa13bf\" />\r\n  </component>\r\n  <component name=\"GithubPullRequestsUISettings\">{\r\n  &quot;selectedUrlAndAccountId&quot;: {\r\n    &quot;url&quot;: &quot;git@github.com:/derivative2002/CTBAS.git&quot;,\r\n    &quot;accountId&quot;: &quot;7d34d820-0ba8-4d20-bae6-031c6cfa13bf&quot;\r\n  }\r\n}</component>\r\n  <component name=\"MarkdownSettingsMigration\">\r\n    <option name=\"stateVersion\" value=\"1\" />\r\n  </component>\r\n  <component name=\"ProjectColorInfo\">{\r\n  &quot;associatedIndex&quot;: 6\r\n}</component>\r\n  <component name=\"ProjectId\" id=\"2ijlvPtESrzHgM2cqMF0UPMsptN\" />\r\n  <component name=\"ProjectLevelVcsManager\" settingsEditedManually=\"true\">\r\n    <ConfirmationsSetting value=\"2\" id=\"Add\" />\r\n  </component>\r\n  <component name=\"ProjectViewState\">\r\n    <option name=\"hideEmptyMiddlePackages\" value=\"true\" />\r\n    <option name=\"showLibraryContents\" value=\"true\" />\r\n  </component>\r\n  <component name=\"PropertiesComponent\"><![CDATA[{\r\n  \"keyToString\": {\r\n    \"ASKED_ADD_EXTERNAL_FILES\": \"true\",\r\n    \"Python.config.executor\": \"Run\",\r\n    \"Python.main.executor\": \"Run\",\r\n    \"Python.strategy_analysis_window.executor\": \"Run\",\r\n    \"Python.trading_strategy.executor\": \"Run\",\r\n    \"RunOnceActivity.OpenProjectViewOnStart\": \"true\",\r\n    \"RunOnceActivity.ShowReadmeOnStart\": \"true\",\r\n    \"WebServerToolWindowFactoryState\": \"false\",\r\n    \"git-widget-placeholder\": \"V1.5\",\r\n    \"ignore.virus.scanning.warn.message\": \"true\",\r\n    \"last_opened_file_path\": \"C:/okx/CTBAS_Bai\",\r\n    \"node.js.detected.package.eslint\": \"true\",\r\n    \"node.js.detected.package.tslint\": \"true\",\r\n    \"node.js.selected.package.eslint\": \"(autodetect)\",\r\n    \"node.js.selected.package.tslint\": \"(autodetect)\",\r\n    \"nodejs_package_manager_path\": \"npm\",\r\n    \"settings.editor.selected.configurable\": \"org.jetbrains.plugins.github.ui.GithubSettingsConfigurable\",\r\n    \"vue.rearranger.settings.migration\": \"true\"\r\n  }\r\n}]]></component>\r\n  <component name=\"SharedIndexes\">\r\n    <attachedChunks>\r\n      <set>\r\n        <option value=\"bundled-js-predefined-1d06a55b98c1-0b3e54e931b4-JavaScript-PY-241.18034.82\" />\r\n        <option value=\"bundled-python-sdk-975db3bf15a3-2767605e8bc2-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-241.18034.82\" />\r\n      </set>\r\n    </attachedChunks>\r\n  </component>\r\n  <component name=\"SpellCheckerSettings\" RuntimeDictionaries=\"0\" Folders=\"0\" CustomDictionaries=\"0\" DefaultDictionary=\"应用程序级\" UseSingleDictionary=\"true\" transferred=\"true\" />\r\n  <component name=\"TaskManager\">\r\n    <task active=\"true\" id=\"Default\" summary=\"默认任务\">\r\n      <changelist id=\"2460e50a-2a04-4d6b-a7e1-7dab60981424\" name=\"更改\" comment=\"\" />\r\n      <created>1720012096511</created>\r\n      <option name=\"number\" value=\"Default\" />\r\n      <option name=\"presentableId\" value=\"Default\" />\r\n      <updated>1720012096511</updated>\r\n      <workItem from=\"1720012097940\" duration=\"1600000\" />\r\n      <workItem from=\"1720063966893\" duration=\"1801000\" />\r\n      <workItem from=\"1720066478577\" duration=\"159000\" />\r\n      <workItem from=\"1720076670536\" duration=\"458000\" />\r\n      <workItem from=\"1720104823726\" duration=\"3411000\" />\r\n      <workItem from=\"1720110679363\" duration=\"449000\" />\r\n      <workItem from=\"1720111142511\" duration=\"1116000\" />\r\n      <workItem from=\"1720112283638\" duration=\"552000\" />\r\n      <workItem from=\"1720112946635\" duration=\"8797000\" />\r\n      <workItem from=\"1720255439811\" duration=\"152000\" />\r\n      <workItem from=\"1720255597781\" duration=\"11757000\" />\r\n    </task>\r\n    <task id=\"LOCAL-00001\" summary=\"update\">\r\n      <option name=\"closed\" value=\"true\" />\r\n      <created>1720102177286</created>\r\n      <option name=\"number\" value=\"00001\" />\r\n      <option name=\"presentableId\" value=\"LOCAL-00001\" />\r\n      <option name=\"project\" value=\"LOCAL\" />\r\n      <updated>1720102177286</updated>\r\n    </task>\r\n    <task id=\"LOCAL-00002\" summary=\"update\">\r\n      <option name=\"closed\" value=\"true\" />\r\n      <created>1720259822191</created>\r\n      <option name=\"number\" value=\"00002\" />\r\n      <option name=\"presentableId\" value=\"LOCAL-00002\" />\r\n      <option name=\"project\" value=\"LOCAL\" />\r\n      <updated>1720259822192</updated>\r\n    </task>\r\n    <task id=\"LOCAL-00003\" summary=\"update\">\r\n      <option name=\"closed\" value=\"true\" />\r\n      <created>1720259961677</created>\r\n      <option name=\"number\" value=\"00003\" />\r\n      <option name=\"presentableId\" value=\"LOCAL-00003\" />\r\n      <option name=\"project\" value=\"LOCAL\" />\r\n      <updated>1720259961677</updated>\r\n    </task>\r\n    <task id=\"LOCAL-00004\" summary=\"将数据收集器和交易策略分离成独立的线程，并使用 asyncio 来处理 WebSocket 数据收集。\">\r\n      <option name=\"closed\" value=\"true\" />\r\n      <created>1720284800090</created>\r\n      <option name=\"number\" value=\"00004\" />\r\n      <option name=\"presentableId\" value=\"LOCAL-00004\" />\r\n      <option name=\"project\" value=\"LOCAL\" />\r\n      <updated>1720284800090</updated>\r\n    </task>\r\n    <task id=\"LOCAL-00005\" summary=\"解决了提交止盈止损委托的问题，同时优化了窗口显示\">\r\n      <option name=\"closed\" value=\"true\" />\r\n      <created>1720599572411</created>\r\n      <option name=\"number\" value=\"00005\" />\r\n      <option name=\"presentableId\" value=\"LOCAL-00005\" />\r\n      <option name=\"project\" value=\"LOCAL\" />\r\n      <updated>1720599572412</updated>\r\n    </task>\r\n    <option name=\"localTasksCounter\" value=\"6\" />\r\n    <servers />\r\n  </component>\r\n  <component name=\"TypeScriptGeneratedFilesManager\">\r\n    <option name=\"version\" value=\"3\" />\r\n  </component>\r\n  <component name=\"Vcs.Log.Tabs.Properties\">\r\n    <option name=\"RECENT_FILTERS\">\r\n      <map>\r\n        <entry key=\"User\">\r\n          <value>\r\n            <list>\r\n              <RecentGroup>\r\n                <option name=\"FILTER_VALUES\">\r\n                  <option value=\"*\" />\r\n                </option>\r\n              </RecentGroup>\r\n            </list>\r\n          </value>\r\n        </entry>\r\n      </map>\r\n    </option>\r\n    <option name=\"TAB_STATES\">\r\n      <map>\r\n        <entry key=\"MAIN\">\r\n          <value>\r\n            <State>\r\n              <option name=\"CUSTOM_BOOLEAN_PROPERTIES\">\r\n                <map>\r\n                  <entry key=\"Show.Git.Branches\" value=\"false\" />\r\n                </map>\r\n              </option>\r\n              <option name=\"FILTERS\">\r\n                <map>\r\n                  <entry key=\"user\">\r\n                    <value>\r\n                      <list>\r\n                        <option value=\"*\" />\r\n                      </list>\r\n                    </value>\r\n                  </entry>\r\n                </map>\r\n              </option>\r\n            </State>\r\n          </value>\r\n        </entry>\r\n      </map>\r\n    </option>\r\n  </component>\r\n  <component name=\"VcsManagerConfiguration\">\r\n    <option name=\"ADD_EXTERNAL_FILES_SILENTLY\" value=\"true\" />\r\n    <MESSAGE value=\"update\" />\r\n    <MESSAGE value=\"将数据收集器和交易策略分离成独立的线程，并使用 asyncio 来处理 WebSocket 数据收集。\" />\r\n    <MESSAGE value=\"解决了提交止盈止损委托的问题，同时优化了窗口显示\" />\r\n    <option name=\"LAST_COMMIT_MESSAGE\" value=\"解决了提交止盈止损委托的问题，同时优化了窗口显示\" />\r\n  </component>\r\n  <component name=\"com.intellij.coverage.CoverageDataManagerImpl\">\r\n    <SUITE FILE_PATH=\"coverage/CTBAS_Bai$main.coverage\" NAME=\"main 覆盖结果\" MODIFIED=\"1720076696592\" SOURCE_PROVIDER=\"com.intellij.coverage.DefaultCoverageFileProvider\" RUNNER=\"coverage.py\" COVERAGE_BY_TEST_ENABLED=\"true\" COVERAGE_TRACING_ENABLED=\"false\" WORKING_DIRECTORY=\"$PROJECT_DIR$\" />\r\n    <SUITE FILE_PATH=\"coverage/CTBAS_V1_0$trading_strategy.coverage\" NAME=\"trading_strategy 覆盖结果\" MODIFIED=\"1720262473855\" SOURCE_PROVIDER=\"com.intellij.coverage.DefaultCoverageFileProvider\" RUNNER=\"coverage.py\" COVERAGE_BY_TEST_ENABLED=\"false\" COVERAGE_TRACING_ENABLED=\"false\" WORKING_DIRECTORY=\"$PROJECT_DIR$\" />\r\n    <SUITE FILE_PATH=\"coverage/CTBAS_V1_0$main.coverage\" NAME=\"main 覆盖结果\" MODIFIED=\"1720284211802\" SOURCE_PROVIDER=\"com.intellij.coverage.DefaultCoverageFileProvider\" RUNNER=\"coverage.py\" COVERAGE_BY_TEST_ENABLED=\"false\" COVERAGE_TRACING_ENABLED=\"false\" WORKING_DIRECTORY=\"$PROJECT_DIR$\" />\r\n    <SUITE FILE_PATH=\"coverage/CTBAS_V1_0$config.coverage\" NAME=\"config 覆盖结果\" MODIFIED=\"1720261798570\" SOURCE_PROVIDER=\"com.intellij.coverage.DefaultCoverageFileProvider\" RUNNER=\"coverage.py\" COVERAGE_BY_TEST_ENABLED=\"false\" COVERAGE_TRACING_ENABLED=\"false\" WORKING_DIRECTORY=\"$PROJECT_DIR$\" />\r\n    <SUITE FILE_PATH=\"coverage/CTBAS_V1$config.coverage\" NAME=\"config 覆盖结果\" MODIFIED=\"1720597384458\" SOURCE_PROVIDER=\"com.intellij.coverage.DefaultCoverageFileProvider\" RUNNER=\"coverage.py\" COVERAGE_BY_TEST_ENABLED=\"false\" COVERAGE_TRACING_ENABLED=\"false\" WORKING_DIRECTORY=\"$PROJECT_DIR$\" />\r\n    <SUITE FILE_PATH=\"coverage/CTBAS_V1_0$strategy_analysis_window.coverage\" NAME=\"strategy_analysis_window 覆盖结果\" MODIFIED=\"1720261801061\" SOURCE_PROVIDER=\"com.intellij.coverage.DefaultCoverageFileProvider\" RUNNER=\"coverage.py\" COVERAGE_BY_TEST_ENABLED=\"false\" COVERAGE_TRACING_ENABLED=\"false\" WORKING_DIRECTORY=\"$PROJECT_DIR$\" />\r\n    <SUITE FILE_PATH=\"coverage/CTBAS_V1$main.coverage\" NAME=\"main 覆盖结果\" MODIFIED=\"1720607436978\" SOURCE_PROVIDER=\"com.intellij.coverage.DefaultCoverageFileProvider\" RUNNER=\"coverage.py\" COVERAGE_BY_TEST_ENABLED=\"false\" COVERAGE_TRACING_ENABLED=\"false\" WORKING_DIRECTORY=\"$PROJECT_DIR$\" />\r\n  </component>\r\n</project>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/.idea/workspace.xml b/.idea/workspace.xml
+--- a/.idea/workspace.xml	
++++ b/.idea/workspace.xml	
+@@ -4,13 +4,13 @@
+     <option name="autoReloadType" value="SELECTIVE" />
+   </component>
+   <component name="ChangeListManager">
+-    <list default="true" id="2460e50a-2a04-4d6b-a7e1-7dab60981424" name="更改" comment="解决了提交止盈止损委托的问题，同时优化了窗口显示">
+-      <change afterPath="$PROJECT_DIR$/strategy_analysis_window.ui" afterDir="false" />
+-      <change afterPath="$PROJECT_DIR$/strategy_analysis_window_ui.py" afterDir="false" />
++    <list default="true" id="2460e50a-2a04-4d6b-a7e1-7dab60981424" name="更改" comment="将数据收集器和交易策略分离成独立的线程，并使用 asyncio 来处理 WebSocket 数据收集。">
+       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
++      <change beforePath="$PROJECT_DIR$/data_collector.py" beforeDir="false" afterPath="$PROJECT_DIR$/data_collector.py" afterDir="false" />
+       <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+       <change beforePath="$PROJECT_DIR$/strategy_analysis_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/strategy_analysis_window.py" afterDir="false" />
+       <change beforePath="$PROJECT_DIR$/trading_strategy.py" beforeDir="false" afterPath="$PROJECT_DIR$/trading_strategy.py" afterDir="false" />
++      <change beforePath="$PROJECT_DIR$/utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils.py" afterDir="false" />
+     </list>
+     <option name="SHOW_DIALOG" value="false" />
+     <option name="HIGHLIGHT_CONFLICTS" value="true" />
+@@ -21,7 +21,7 @@
+     <branch-grouping />
+     <option name="RECENT_BRANCH_BY_REPOSITORY">
+       <map>
+-        <entry key="$PROJECT_DIR$" value="V1.4" />
++        <entry key="$PROJECT_DIR$" value="V1.1" />
+       </map>
+     </option>
+     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+@@ -57,7 +57,6 @@
+   </component>
+   <component name="PropertiesComponent"><![CDATA[{
+   "keyToString": {
+-    "ASKED_ADD_EXTERNAL_FILES": "true",
+     "Python.config.executor": "Run",
+     "Python.main.executor": "Run",
+     "Python.strategy_analysis_window.executor": "Run",
+@@ -137,15 +136,7 @@
+       <option name="project" value="LOCAL" />
+       <updated>1720284800090</updated>
+     </task>
+-    <task id="LOCAL-00005" summary="解决了提交止盈止损委托的问题，同时优化了窗口显示">
+-      <option name="closed" value="true" />
+-      <created>1720599572411</created>
+-      <option name="number" value="00005" />
+-      <option name="presentableId" value="LOCAL-00005" />
+-      <option name="project" value="LOCAL" />
+-      <updated>1720599572412</updated>
+-    </task>
+-    <option name="localTasksCounter" value="6" />
++    <option name="localTasksCounter" value="5" />
+     <servers />
+   </component>
+   <component name="TypeScriptGeneratedFilesManager">
+@@ -195,11 +186,9 @@
+     </option>
+   </component>
+   <component name="VcsManagerConfiguration">
+-    <option name="ADD_EXTERNAL_FILES_SILENTLY" value="true" />
+     <MESSAGE value="update" />
+     <MESSAGE value="将数据收集器和交易策略分离成独立的线程，并使用 asyncio 来处理 WebSocket 数据收集。" />
+-    <MESSAGE value="解决了提交止盈止损委托的问题，同时优化了窗口显示" />
+-    <option name="LAST_COMMIT_MESSAGE" value="解决了提交止盈止损委托的问题，同时优化了窗口显示" />
++    <option name="LAST_COMMIT_MESSAGE" value="将数据收集器和交易策略分离成独立的线程，并使用 asyncio 来处理 WebSocket 数据收集。" />
+   </component>
+   <component name="com.intellij.coverage.CoverageDataManagerImpl">
+     <SUITE FILE_PATH="coverage/CTBAS_Bai$main.coverage" NAME="main 覆盖结果" MODIFIED="1720076696592" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+@@ -208,6 +197,6 @@
+     <SUITE FILE_PATH="coverage/CTBAS_V1_0$config.coverage" NAME="config 覆盖结果" MODIFIED="1720261798570" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+     <SUITE FILE_PATH="coverage/CTBAS_V1$config.coverage" NAME="config 覆盖结果" MODIFIED="1720597384458" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+     <SUITE FILE_PATH="coverage/CTBAS_V1_0$strategy_analysis_window.coverage" NAME="strategy_analysis_window 覆盖结果" MODIFIED="1720261801061" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+-    <SUITE FILE_PATH="coverage/CTBAS_V1$main.coverage" NAME="main 覆盖结果" MODIFIED="1720607436978" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
++    <SUITE FILE_PATH="coverage/CTBAS_V1$main.coverage" NAME="main 覆盖结果" MODIFIED="1720613230796" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+   </component>
+ </project>
+\ No newline at end of file

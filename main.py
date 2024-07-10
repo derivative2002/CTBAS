@@ -1,41 +1,38 @@
-import threading
-from queue import Queue
-from strategy_analysis_window import StrategyAnalysisWindow
-from trading_strategy import TradingStrategy
-from data_collector import DataCollector
 import asyncio
 import sys
+import threading
+import time
+from queue import Queue
+
 from PyQt5.QtWidgets import QApplication
+
+from data_collector import DataCollector
+from strategy_analysis_window import StrategyAnalysisWindow
+from trading_strategy import TradingStrategy
+
 
 def main():
     app = QApplication(sys.argv)
 
-    # 创建数据队列
     data_queue = Queue()
-
-    # 创建策略分析窗口
     analysis_window = StrategyAnalysisWindow()
-
-    # 创建交易策略实例
     strategy = TradingStrategy(data_queue, analysis_window)
-
-    # 设置策略实例给分析窗口
     analysis_window.set_strategy(strategy)
-
-    # 创建数据收集器
     data_collector = DataCollector(data_queue)
 
-    # 启动数据收集器（在新线程中）
     collector_thread = threading.Thread(target=lambda: asyncio.run(data_collector.start()), daemon=True)
     collector_thread.start()
 
-    # 启动交易策略（在新线程中）
-    strategy_thread = threading.Thread(target=strategy.start, daemon=True)
+    strategy_thread = threading.Thread(target=strategy.run, daemon=True)
     strategy_thread.start()
 
-    # 在主线程中运行分析窗口
     analysis_window.show()
-    sys.exit(app.exec_())
+
+    # 添加这个循环来保持程序运行
+    while True:
+        app.processEvents()
+        time.sleep(0.1)
+
 
 if __name__ == "__main__":
     main()
