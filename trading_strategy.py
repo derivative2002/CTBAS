@@ -311,8 +311,6 @@ class TradingStrategy:
             self.log_and_update("无法获取当前价格，开仓失败", logging.WARNING)
             return None
 
-        stop_loss_price = current_price - ATR_MULTIPLIER * self.atr if order_type == "buy" else current_price + ATR_MULTIPLIER * self.atr
-
         symbol_info = self.get_symbol_info("BTC-USDT-SWAP")
         if symbol_info is None:
             self.log_and_update("无法获取交易品种信息，开仓失败", logging.ERROR)
@@ -328,7 +326,7 @@ class TradingStrategy:
             self.log_and_update(f"计算的交易量 ({adjusted_num_contracts:.4f} 张) 过小，无法开仓", logging.WARNING)
             return None
 
-        order_result = self.place_order(side, pos_side, adjusted_num_contracts, stop_loss_price)
+        order_result = self.place_order(side, pos_side, adjusted_num_contracts)  # 不再传递 stop_loss_price 参数
         self.log_and_update(f"下单结果: {order_result}")
 
         if order_result and isinstance(order_result, list) and len(order_result) > 0:
@@ -344,7 +342,7 @@ class TradingStrategy:
                             'open_price': float(order_info.get('avgPx', current_price)),
                             'size': lot_size,
                             'open_time': time.time(),
-                            'stop_loss_price': stop_loss_price,
+                            'stop_loss_price': None,  # 停止跟踪 stop_loss_price
                             'take_profit_price': 0,
                         }
 
@@ -356,7 +354,7 @@ class TradingStrategy:
 
                         self.log_and_update(
                             f"开仓成功: {order_type.capitalize()}单已成交, 手数={lot_size:.4f} (合约张数: {adjusted_num_contracts:.4f}), 开仓价={position['open_price']:.2f},"
-                            f"初始止损价={position['stop_loss_price']:.2f}, 初始止盈价={position['take_profit_price']:.2f}")
+                            f"初始止盈价={position['take_profit_price']:.2f}")
 
                         self.update_balance()
                         return {'ordId': order_id}
@@ -391,7 +389,7 @@ class TradingStrategy:
             time.sleep(1)
         return 'unknown'
 
-    def place_order(self, side, pos_side, size, stop_loss_price=None):
+    def place_order(self, side, pos_side, size):
         endpoint = "/api/v5/trade/order"
         order_data = {
             "instId": "BTC-USDT-SWAP",
@@ -401,10 +399,6 @@ class TradingStrategy:
             "sz": f"{size:.4f}",
             "posSide": pos_side,
         }
-
-        if stop_loss_price is not None:
-            order_data["slTriggerPx"] = str(stop_loss_price)
-            order_data["slOrdPx"] = str(stop_loss_price)
 
         response = self.get_data_with_retry(endpoint, method="POST", data=order_data)
         self.log_and_update(f"下单API请求: {order_data}")
@@ -495,6 +489,7 @@ class TradingStrategy:
         return None
 
     def manage_open_positions(self, current_price):
+        position_info = ""
         for position in self.open_positions:
             if position is None or position['open_time'] is None:
                 continue
@@ -534,6 +529,18 @@ class TradingStrategy:
                     f"持仓方向: {position['type'].upper()}, 持仓量: {position['size']} BTC\n"
                     f"当前收益: {profit:.2f} USDT ({profit_percentage:.2f}%)"
                 )
+            position_info += (
+                f"持仓方向: {position['type'].upper()}\n"
+                f"持仓量: {position['size']} BTC\n"
+                f"开仓价: {position['open_price']:.2f}\n"
+                f"当前价格: {current_price:.2f}\n"
+                f"当前收益: {profit:.2f} USDT ({profit_percentage:.2f}%)\n"
+                f"止损价: {position['stop_loss_price']:.2f}\n"
+                f"止盈价: {position['take_profit_price']:.2f}\n"
+                f"-----------------------------------\n"
+            )
+            self.analysis_window.update_position_info(position_info)
+
 
         if not self.open_positions:
             self.log_and_update("所有持仓已平仓")
@@ -609,7 +616,6 @@ class TradingStrategy:
                     if len(timestamps) > 100:
                         timestamps.pop(0)
                         prices.pop(0)
-                    self.analysis_window.update_chart({'timestamps': timestamps, 'prices': prices})
 
                     if current_time - last_kline_update >= kline_update_interval:
                         kline_data = self.get_kline_data()
