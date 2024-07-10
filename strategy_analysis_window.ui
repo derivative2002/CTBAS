@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CTBAS</class>
+ <widget class="QWidget" name="CTBAS">
+  <property name="windowModality">
+   <enum>Qt::WindowModal</enum>
+  </property>
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>927</height>
+   </rect>
+  </property>
+  <property name="font">
+   <font>
+    <family>微软雅黑</family>
+    <pointsize>14</pointsize>
+    <weight>75</weight>
+    <bold>true</bold>
+   </font>
+  </property>
+  <property name="mouseTracking">
+   <bool>true</bool>
+  </property>
+  <property name="tabletTracking">
+   <bool>true</bool>
+  </property>
+  <property name="windowTitle">
+   <string>CTBAS</string>
+  </property>
+  <layout class="QHBoxLayout" name="horizontalLayout">
+    <item>
+      <widget class="QGroupBox" name="groupBox">
+        <property name="title">
+          <string>输出日志</string>
+        </property>
+        <layout class="QVBoxLayout" name="verticalLayout">
+          <item>
+            <widget class="QTextEdit" name="textEdit">
+              <property name="readOnly">
+                <bool>true</bool>
+              </property>
+            </widget>
+          </item>
+        </layout>
+      </widget>
+    </item>
+    <item>
+      <layout class="QVBoxLayout" name="verticalLayoutRight">
+        <item>
+          <widget class="QGroupBox" name="groupBox_2">
+            <property name="title">
+              <string>基本信息</string>
+            </property>
+            <layout class="QVBoxLayout" name="verticalLayoutInfo">
+              <item>
+                <widget class="QLabel" name="label">
+                  <property name="text">
+                    <string>当前账户名称：</string>
+                  </property>
+                </widget>
+              </item>
+              <item>
+                <widget class="QLabel" name="label_2">
+                  <property name="text">
+                    <string>账户余额：</string>
+                  </property>
+                </widget>
+              </item>
+              <item>
+                <widget class="QLabel" name="label_3">
+                  <property name="text">
+                    <string>浮动收益：</string>
+                  </property>
+                </widget>
+              </item>
+            </layout>
+          </widget>
+        </item>
+        <item>
+          <widget class="QGroupBox" name="groupBox_3">
+            <property name="title">
+              <string>持仓管理</string>
+            </property>
+            <layout class="QVBoxLayout" name="verticalLayoutTable">
+              <item>
+                <widget class="QTableWidget" name="tableWidget">
+                  <property name="columnCount">
+                    <number>5</number>
+                  </property>
+                  <property name="rowCount">
+                    <number>0</number>
+                  </property>
+                  <column>
+                    <property name="text">
+                      <string>持仓方向</string>
+                    </property>
+                  </column>
+                  <column>
+                    <property name="text">
+                      <string>持仓量</string>
+                    </property>
+                  </column>
+                  <column>
+                    <property name="text">
+                      <string>开仓价</string>
+                    </property>
+                  </column>
+                  <column>
+                    <property name="text">
+                      <string>当前价格</string>
+                    </property>
+                  </column>
+                  <column>
+                    <property name="text">
+                      <string>当前收益</string>
+                    </property>
+                  </column>
+                </widget>
+              </item>
+            </layout>
+          </widget>
+        </item>
+      </layout>
+    </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
