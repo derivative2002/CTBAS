@@ -9,7 +9,7 @@ from queue import Queue
 async def send_heartbeat(websocket):
     while True:
         try:
-            await websocket.send(json.dumps({"op": "ping"}))
+            await websocket.send("ping")
             await asyncio.sleep(20)  # 每20秒发送一次心跳
         except:
             break
@@ -27,6 +27,9 @@ class DataCollector:
                             format='%(asctime)s - %(levelname)s - %(message)s')
 
     async def on_message(self, message):
+        if message == "pong":
+            logging.debug("Received pong message")
+            return
         data = json.loads(message)
         if 'event' in data:
             if data['event'] == 'subscribe':

@@ -51,6 +51,8 @@ class TradingStrategy:
         self.initialize_strategy()
         self.paused = False
         self.price_history = []
+        self.pending_orders = {}
+        self.trade_count = 0
 
         # 设置日志
         self.logger = logging.getLogger(__name__)
@@ -121,6 +123,23 @@ class TradingStrategy:
                 self.log_and_update(f"响应数据: {response}", logging.DEBUG)
         self.log_and_update("无法获取账户余额", logging.ERROR)
         return None
+
+    def check_pending_orders(self):
+        for order_id, order_time in list(self.pending_orders.items()):
+            if time.time() - order_time > 300:  # 检查超过5分钟的订单
+                order_status = self.check_order_status(order_id)
+                if order_status == 'filled':
+                    self.log_and_update(f"订单 {order_id} 已成交")
+                    del self.pending_orders[order_id]
+                    self.trade_count += 1
+                elif order_status == 'failed':
+                    self.log_and_update(f"订单 {order_id} 已失败", logging.WARNING)
+                    del self.pending_orders[order_id]
+                elif order_status == 'pending':
+                    self.log_and_update(f"订单 {order_id} 仍在等待成交")
+                else:
+                    self.log_and_update(f"订单 {order_id} 状态未知，考虑手动检查", logging.WARNING)
+                    del self.pending_orders[order_id]
 
     def get_open_positions_value(self):
         floating_profit = 0
@@ -562,14 +581,11 @@ class TradingStrategy:
             return
 
         last_kline_update = datetime.datetime.now()
-        kline_update_interval = 60  # 每60秒更新一次K线数据
+        kline_update_interval = 1  # 每1秒更新一次K线数据
         timestamps = []
         prices = []
 
-        trade_count = 0
         last_check_time = datetime.datetime.now()
-        pending_orders = {}
-
         last_price = None  # 用于跟踪上一次的价格
 
         while True:
@@ -579,35 +595,34 @@ class TradingStrategy:
 
             try:
                 current_time = datetime.datetime.now()
+
+                # 每次循环都获取K线数据
+                kline_data = self.get_kline_data()
+                if kline_data:
+                    self.update_indicators(kline_data)
+                    self.log_and_update(f"K线数据已更新，共{len(kline_data)}条数据")
+                    self.log_and_update(f"当前指标: MA值={self.ma_values}, 趋势MA={self.trend_ma}, ATR={self.atr}")
+                else:
+                    self.log_and_update("无法获取K线数据", logging.WARNING)
+
+                # 检查交易次数
                 time_diff = current_time - last_check_time
-
                 if time_diff.total_seconds() >= 1800:
-                    if trade_count == 0:
+                    if self.trade_count == 0:
                         self.log_and_update("警告：过去30分钟内没有交易发生", logging.WARNING)
-                    elif trade_count < 3:
-                        self.log_and_update(f"警告：过去30分钟内交易次数较少，仅有 {trade_count} 次", logging.WARNING)
+                    elif self.trade_count < 3:
+                        self.log_and_update(f"警告：过去30分钟内交易次数较少，仅有 {self.trade_count} 次",
+                                            logging.WARNING)
                     else:
-                        self.log_and_update(f"过去30分钟内交易次数：{trade_count}")
+                        self.log_and_update(f"过去30分钟内交易次数：{self.trade_count}")
 
-                    trade_count = 0
+                    self.trade_count = 0
                     last_check_time = current_time
 
-                for order_id, order_time in list(pending_orders.items()):
-                    if time.time() - order_time > 300:
-                        order_status = self.check_order_status(order_id)
-                        if order_status == 'filled':
-                            self.log_and_update(f"订单 {order_id} 已成交")
-                            del pending_orders[order_id]
-                            trade_count += 1
-                        elif order_status == 'failed':
-                            self.log_and_update(f"订单 {order_id} 已失败", logging.WARNING)
-                            del pending_orders[order_id]
-                        elif order_status == 'pending':
-                            self.log_and_update(f"订单 {order_id} 仍在等待成交")
-                        else:
-                            self.log_and_update(f"订单 {order_id} 状态未知，考虑手动检查", logging.WARNING)
-                            del pending_orders[order_id]
+                # 检查未完成订单
+                self.check_pending_orders()
 
+                # 获取实时价格
                 item = self.data_queue.get(timeout=5)
                 if 'last' in item:
                     self.current_price = float(item['last'])
@@ -641,17 +656,6 @@ class TradingStrategy:
                         prices.pop(0)
                     self.analysis_window.update_chart({'timestamps': timestamps, 'prices': prices})
 
-                    if (current_time - last_kline_update).total_seconds() >= kline_update_interval:
-                        kline_data = self.get_kline_data()
-                        if kline_data:
-                            self.update_indicators(kline_data)
-                            last_kline_update = current_time
-                            self.log_and_update(f"K线数据已更新，共{len(kline_data)}条数据")
-                            self.log_and_update(
-                                f"当前指标: MA值={self.ma_values}, 趋势MA={self.trend_ma}, ATR={self.atr}")
-                        else:
-                            self.log_and_update("无法获取K线数据", logging.WARNING)
-
                     if self.current_price is not None:
                         buy_condition, buy_reasons = self.check_buy_condition(self.current_price)
                         sell_condition, sell_reasons = self.check_sell_condition(self.current_price)
@@ -670,13 +674,13 @@ class TradingStrategy:
                         if buy_condition and self.atr is not None and self.atr > 0:
                             order_result = self.open_position("buy")
                             if isinstance(order_result, dict) and 'ordId' in order_result:
-                                pending_orders[order_result['ordId']] = time.time()
+                                self.pending_orders[order_result['ordId']] = time.time()
                             else:
                                 self.log_and_update(f"开仓失败或返回异常结果: {order_result}", logging.WARNING)
                         elif sell_condition and self.atr is not None and self.atr > 0:
                             order_result = self.open_position("sell")
                             if isinstance(order_result, dict) and 'ordId' in order_result:
-                                pending_orders[order_result['ordId']] = time.time()
+                                self.pending_orders[order_result['ordId']] = time.time()
                             else:
                                 self.log_and_update(f"开仓失败或返回异常结果: {order_result}", logging.WARNING)
 
