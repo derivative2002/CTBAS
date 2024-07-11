@@ -33,6 +33,7 @@ def calculate_atr(high_prices, low_prices, close_prices, period):
 
 class TradingStrategy:
     def __init__(self, data_queue, analysis_window):
+        self.current_price = None
         self.atr = None
         self.trend_ma = None
         self.prev_ma_values = None
@@ -49,6 +50,7 @@ class TradingStrategy:
         self.session = requests.Session()
         self.initialize_strategy()
         self.paused = False
+        self.price_history = []
 
         # 设置日志
         self.logger = logging.getLogger(__name__)
@@ -91,7 +93,7 @@ class TradingStrategy:
                     'OK-ACCESS-SIGN': self.sign_message(timestamp, method, endpoint, json.dumps(data) if data else ''),
                     'OK-ACCESS-TIMESTAMP': timestamp,
                     'OK-ACCESS-PASSPHRASE': self.passphrase,
-                    'x-simulated-trading': '1',
+                    #'x-simulated-trading': '1',
                 }
                 if method == "GET":
                     response = self.session.get(url, headers=headers, params=params, timeout=10)
@@ -110,8 +112,14 @@ class TradingStrategy:
     def get_account_balance(self):
         endpoint = "/api/v5/account/balance?ccy=USDT"
         response = self.get_data_with_retry(endpoint)
-        if response and 'data' in response:
-            return float(response['data'][0]['details'][0]['cashBal'])
+        self.log_and_update(f"账户余额API响应: {response}", logging.DEBUG)
+        if response and 'data' in response and response['data']:
+            try:
+                return float(response['data'][0]['details'][0]['cashBal'])
+            except (IndexError, KeyError) as e:
+                self.log_and_update(f"解析账户余额数据时出错: {e}", logging.ERROR)
+                self.log_and_update(f"响应数据: {response}", logging.DEBUG)
+        self.log_and_update("无法获取账户余额", logging.ERROR)
         return None
 
     def get_open_positions_value(self):
@@ -220,7 +228,11 @@ class TradingStrategy:
                 return False, ["价格未突破所有MA"]
 
         # 检查上一根K线的收盘价是否低于30日移动平均线(MA_PERIOD3)
-        if self.prev_ma_values[2] is not None and self.get_previous_close_price() > self.prev_ma_values[2]:
+        previous_close = self.get_previous_close_price()
+        if previous_close is None or self.prev_ma_values[2] is None:
+            return False, ["无法获取上一个收盘价或30日移动平均线"]
+
+        if previous_close > self.prev_ma_values[2]:
             return False, ["上一根K线的收盘价未低于30日移动平均线"]
 
         return True, ["所有做多条件满足"]
@@ -234,16 +246,18 @@ class TradingStrategy:
                 return False, ["价格未跌破所有MA"]
 
         # 检查上一根K线的收盘价是否高于30日移动平均线(MA_PERIOD3)
-        if self.prev_ma_values[2] is not None and self.get_previous_close_price() < self.prev_ma_values[2]:
+        previous_close = self.get_previous_close_price()
+        if previous_close is None or self.prev_ma_values[2] is None:
+            return False, ["无法获取上一个收盘价或30日移动平均线"]
+
+        if previous_close < self.prev_ma_values[2]:
             return False, ["上一根K线的收盘价未高于30日移动平均线"]
 
         return True, ["所有做空条件满足"]
 
     def get_previous_close_price(self):
-        endpoint = "/api/v5/market/ticker?instId=BTC-USDT-SWAP"
-        response = self.get_data_with_retry(endpoint)
-        if response and 'data' in response:
-            return float(response['data'][0]['last'])
+        if len(self.price_history) > 1:
+            return self.price_history[-2]
         return None
 
     def calculate_lot_size(self, account_balance, atr):
@@ -482,11 +496,7 @@ class TradingStrategy:
             return False
 
     def get_current_price(self):
-        endpoint = "/api/v5/market/ticker?instId=BTC-USDT-SWAP"
-        response = self.get_data_with_retry(endpoint)
-        if response and 'data' in response:
-            return float(response['data'][0]['last'])
-        return None
+        return self.current_price
 
     def manage_open_positions(self, current_price):
         for position in self.open_positions[:]:  # 使用切片创建副本,以便在循环中安全地移除元素
@@ -551,14 +561,16 @@ class TradingStrategy:
             self.log_and_update("无法获取账户余额，策略停止运行", logging.ERROR)
             return
 
-        last_kline_update = 0
-        kline_update_interval = 1  # 每1秒更新一次K线数据
+        last_kline_update = datetime.datetime.now()
+        kline_update_interval = 60  # 每60秒更新一次K线数据
         timestamps = []
         prices = []
 
         trade_count = 0
         last_check_time = datetime.datetime.now()
         pending_orders = {}
+
+        last_price = None  # 用于跟踪上一次的价格
 
         while True:
             if self.paused:
@@ -598,18 +610,38 @@ class TradingStrategy:
 
                 item = self.data_queue.get(timeout=5)
                 if 'last' in item:
-                    current_price = float(item['last'])
-                    current_time = time.time()
-                    self.log_and_update(f"当前价格: {current_price}")
+                    self.current_price = float(item['last'])
+                    self.price_history.append(self.current_price)
+                    if len(self.price_history) > 100:  # 保存最近100个价格
+                        self.price_history.pop(0)
 
-                    timestamps.append(datetime.datetime.now())
-                    prices.append(current_price)
+                    # 添加实时收盘价提示信息
+                    if last_price is not None:
+                        if self.current_price > last_price:
+                            price_change = "上涨"
+                        elif self.current_price < last_price:
+                            price_change = "下跌"
+                        else:
+                            price_change = "持平"
+
+                        change_amount = abs(self.current_price - last_price)
+                        change_percentage = (change_amount / last_price) * 100
+
+                        self.log_and_update(f"实时收盘价: {self.current_price:.2f} ({price_change})")
+                        self.log_and_update(f"价格变动: {change_amount:.2f} ({change_percentage:.2f}%)")
+
+                    last_price = self.current_price
+
+                    self.log_and_update(f"当前价格: {self.current_price}")
+
+                    timestamps.append(current_time)
+                    prices.append(self.current_price)
                     if len(timestamps) > 100:
                         timestamps.pop(0)
                         prices.pop(0)
                     self.analysis_window.update_chart({'timestamps': timestamps, 'prices': prices})
 
-                    if current_time - last_kline_update >= kline_update_interval:
+                    if (current_time - last_kline_update).total_seconds() >= kline_update_interval:
                         kline_data = self.get_kline_data()
                         if kline_data:
                             self.update_indicators(kline_data)
@@ -620,35 +652,38 @@ class TradingStrategy:
                         else:
                             self.log_and_update("无法获取K线数据", logging.WARNING)
 
-                    buy_condition, buy_reasons = self.check_buy_condition(current_price)
-                    sell_condition, sell_reasons = self.check_sell_condition(current_price)
+                    if self.current_price is not None:
+                        buy_condition, buy_reasons = self.check_buy_condition(self.current_price)
+                        sell_condition, sell_reasons = self.check_sell_condition(self.current_price)
 
-                    self.log_and_update("策略分析:")
-                    self.log_and_update(f"做多条件满足: {buy_condition}")
-                    for reason in buy_reasons:
-                        self.log_and_update(f"  - {reason}")
-                    self.log_and_update(f"做空条件满足: {sell_condition}")
-                    for reason in sell_reasons:
-                        self.log_and_update(f"  - {reason}")
+                        self.log_and_update("策略分析:")
+                        self.log_and_update(f"做多条件满足: {buy_condition}")
+                        for reason in buy_reasons:
+                            self.log_and_update(f"  - {reason}")
+                        self.log_and_update(f"做空条件满足: {sell_condition}")
+                        for reason in sell_reasons:
+                            self.log_and_update(f"  - {reason}")
 
-                if self.account_balance is None:
-                    self.update_balance()
+                        if self.account_balance is None:
+                            self.update_balance()
 
-                if buy_condition and self.atr is not None and self.atr > 0:
-                    order_result = self.open_position("buy")
-                    if isinstance(order_result, dict) and 'ordId' in order_result:
-                        pending_orders[order_result['ordId']] = time.time()
+                        if buy_condition and self.atr is not None and self.atr > 0:
+                            order_result = self.open_position("buy")
+                            if isinstance(order_result, dict) and 'ordId' in order_result:
+                                pending_orders[order_result['ordId']] = time.time()
+                            else:
+                                self.log_and_update(f"开仓失败或返回异常结果: {order_result}", logging.WARNING)
+                        elif sell_condition and self.atr is not None and self.atr > 0:
+                            order_result = self.open_position("sell")
+                            if isinstance(order_result, dict) and 'ordId' in order_result:
+                                pending_orders[order_result['ordId']] = time.time()
+                            else:
+                                self.log_and_update(f"开仓失败或返回异常结果: {order_result}", logging.WARNING)
+
+                        if self.open_positions:
+                            self.manage_open_positions(self.current_price)
                     else:
-                        self.log_and_update(f"开仓失败或返回异常结果: {order_result}", logging.WARNING)
-                elif sell_condition and self.atr is not None and self.atr > 0:
-                    order_result = self.open_position("sell")
-                    if isinstance(order_result, dict) and 'ordId' in order_result:
-                        pending_orders[order_result['ordId']] = time.time()
-                    else:
-                        self.log_and_update(f"开仓失败或返回异常结果: {order_result}", logging.WARNING)
-
-                if self.open_positions:
-                    self.manage_open_positions(current_price)
+                        self.log_and_update("当前没有有效的价格数据", logging.WARNING)
 
             except Empty:
                 self.log_and_update("等待数据...", logging.DEBUG)
