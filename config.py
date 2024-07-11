@@ -6,7 +6,7 @@ RISK_PERCENT = 5.0  # 风险百分比
 TREND_MA_PERIOD = 200  # 趋势均线周期
 
 # 配置API密钥和测试环境
-api_key = 'a5653cf6-0466-4ca7-a157-89b79b773d79'
-secret_key = '7E9BD83705599BA3F2A447FC8817377F'
+api_key = '24aa38f5-ec66-436d-8ff9-840587e40e9d'
+secret_key = 'E0B524E2A8C6110413925411A7B6E114'
 passphrase = '@BTL0202lwm0316'
 base_url = 'https://www.okx.com'
